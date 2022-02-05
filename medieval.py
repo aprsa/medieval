@@ -70,7 +70,7 @@ class Album(gtk.Box):
         self.entry.set_visible(True)
         self.entry.connect('activate', self.on_entry_changed)
 
-        dnd = gtk.DropTarget.new(gdk.FileList, gdk.DragAction.COPY)
+        dnd = gtk.DropTarget.new(gio.ListModel, gdk.DragAction.COPY)
         dnd.connect('drop', self.on_dnd_drop)
         dnd.connect('accept', self.on_dnd_accept)
         dnd.connect('enter', self.on_dnd_enter)
@@ -84,11 +84,12 @@ class Album(gtk.Box):
         self.entry.set_visible(False)
         self.label.set_visible(True)
 
-    def on_dnd_drop(self, value, x, y, user_data):
-        print(f'in on_dnd_drop(); value={value}, x={x}, y={y}, user_data={user_data}')
+    def on_dnd_drop(self, drop_target, value, x, y):
+        print(f'in on_dnd_drop(); drop_target={drop_target}, value={value}, x={x}, y={y}')
+        print(list(value))
 
-    def on_dnd_accept(self, drop, user_data):
-        print(f'in on_dnd_accept(); drop={drop}, user_data={user_data}')
+    def on_dnd_accept(self, drop_target, drop):
+        print(f'in on_dnd_accept(); drop_target={drop_target}, drop={drop}')
         return True
 
     def on_dnd_enter(self, drop_target, x, y):
@@ -124,38 +125,79 @@ class MediaFile(gtk.FlowBoxChild):
     def __repr__(self):
         return f'<MediaFile {self.filename}>'
 
-class MediaGallery(gtk.FlowBox):
+    def basename(self):
+        return os.path.basename(self.filename)
+
+class DisplayPanel(gtk.Box):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, orientation=gtk.Orientation.HORIZONTAL, **kwargs)
+
+        self.gallery = gtk.FlowBox(homogeneous=True, column_spacing=5, row_spacing=5, valign=gtk.Align.START, halign=gtk.Align.FILL, activate_on_single_click=False, selection_mode=gtk.SelectionMode.MULTIPLE)
+        self.gallery.connect('child-activated', self.on_media_selected)
+
+        scrolled_panel = gtk.ScrolledWindow(hscrollbar_policy=gtk.PolicyType.NEVER, vscrollbar_policy=gtk.PolicyType.AUTOMATIC, hexpand=True, vexpand=True)
+        scrolled_panel.set_child(self.gallery)
+
+        self.gallery_frame = gtk.Frame(label='Gallery', hexpand=True, vexpand=True)
+        self.gallery_frame.set_child(scrolled_panel)
+
+        self.append(self.gallery_frame)
+
+        self.picture_area = gtk.ScrolledWindow(hscrollbar_policy=gtk.PolicyType.AUTOMATIC, vscrollbar_policy=gtk.PolicyType.AUTOMATIC)
+        # self.picture_area.connect('')
+
+        gesture = gtk.GestureClick.new()
+        gesture.connect('pressed', self.on_picture_clicked)
+        self.picture_area.add_controller(gesture)
+
+        self.picture_frame = gtk.Frame(label='Image', hexpand=True, vexpand=True)
+        self.picture_frame.set_visible(False)
+        self.picture_frame.set_child(self.picture_area)
+
+        keypress = gtk.EventControllerKey.new()
+        keypress.connect('key-pressed', self.on_keypress)
+        self.picture_area.add_controller(keypress)
+
+        self.append(self.picture_frame)
 
         self.name = kwargs.get('name', 'default')
-        self.connect('child-activated', self.on_media_selected)
 
         dnd = gtk.DragSource.new()
         dnd.set_actions(gdk.DragAction.COPY)
         dnd.connect('prepare', self.on_dnd_prepare)
         dnd.connect('drag-begin', self.on_dnd_begin)
         dnd.connect('drag-end', self.on_dnd_end)
-        self.add_controller(dnd)
+        self.gallery.add_controller(dnd)
 
     def __repr__(self):
-        return f'<MediaGallery {self.name}>'
+        return f'<DisplayPanel {self.name}>'
 
     def on_media_selected(self, gallery, media_file):
         print(f'on_media_selected(); gallery={gallery}, media_file={media_file}')
+        filename = media_file.basename()
+        self.gallery_frame.set_visible(False)
+        picture = gtk.Picture.new_for_filename(f'photos/{filename}')
+        picture.set_can_shrink(True)
+        self.picture_frame.set_label(filename)
+        self.picture_area.set_child(picture)
+        self.picture_area.grab_focus()
+        self.picture_frame.set_visible(True)
 
     def on_dnd_prepare(self, drag_source, x, y):
-        data = self.get_selected_children()
-        print(f'in on_dnd_prepare(); drag_source={drag_source}, x={x}, y={y}, data={data}')
-        if len(data) == 0:
+        data = gio.ListStore()
+        data.splice(0, 0, self.gallery.get_selected_children())
+        num_items = data.get_n_items()
+        print(f'in on_dnd_prepare(); drag_source={drag_source}, x={x}, y={y}, data={data}, num_items={num_items}')
+        if num_items == 0:
             return None
 
         paintable = data[0].image.get_paintable()  # TODO: make this nicer for multiple selections
         drag_image = gtk.Image.new_from_paintable(paintable)
         drag_image.set_opacity(0.5)  # FIXME: not sure why transparency doesn't work
-        drag_source.set_icon(drag_image.get_paintable(), 128, 128)  # FIXME: not sure why hot_x and hot_y don't work
+        drag_source.set_icon(drag_image.get_paintable(), 128, 128)  # TODO: consider a better hot_x, hot_y default
         
-        content = gdk.ContentProvider.new_for_value(data)
+        passed_data = gobject.Value(gio.ListModel, data)
+        content = gdk.ContentProvider.new_for_value(passed_data)
         return content
 
     def on_dnd_begin(self, drag_source, data):
@@ -164,6 +206,20 @@ class MediaGallery(gtk.FlowBox):
 
     def on_dnd_end(self, drag, drag_data, some_flag):
         print(f'in on_dnd_end(); drag={drag}, drag_data={drag_data}, some_flag={some_flag}')
+
+    def on_keypress(self, controller, keyval, keycode, state):
+        print(f'controller={controller}, keyval={keyval}, keycode={keycode}, state={state}')
+        if keycode == 9:  # ESC key
+            self.picture_frame.set_visible(False)
+            self.gallery_frame.set_visible(True)
+            return True
+        return False
+
+    def on_picture_clicked(self, click, n_press, x, y):
+        print(f'on_picture_clicked(): click={click}, n_press={n_press}, x={x}, y={y}')
+        if n_press == 2:
+            self.picture_frame.set_visible(False)
+            self.gallery_frame.set_visible(True)
 
 class Importer(gtk.FileChooserDialog):
     def __init__(self, parent, select_multiple):
@@ -190,7 +246,7 @@ class Importer(gtk.FileChooserDialog):
             media_list = import_media_from_directory(self.get_file().get_path())
             for f in media_list:
                 child = MediaFile(file=f)
-                self.parent.gallery.insert(child, -1)
+                self.parent.display.gallery.insert(child, -1)
 
         elif response == gtk.ResponseType.CANCEL:
             print("Cancel clicked")
@@ -263,14 +319,8 @@ class MedievalWindow(gtk.ApplicationWindow):
         new_album_button.connect('clicked', self.on_new_album_clicked)
         abbox.append(new_album_button)
 
-        display_frame = gtk.Frame(label='Gallery', vexpand=True)
-        hpanels.set_end_child(display_frame)
-
-        scrolled_panel = gtk.ScrolledWindow(hscrollbar_policy=gtk.PolicyType.NEVER, vscrollbar_policy=gtk.PolicyType.AUTOMATIC)
-        display_frame.set_child(scrolled_panel)
-
-        self.gallery = MediaGallery(homogeneous=True, column_spacing=5, row_spacing=5, valign=gtk.Align.START, halign=gtk.Align.FILL, activate_on_single_click=False, selection_mode=gtk.SelectionMode.MULTIPLE)
-        scrolled_panel.set_child(self.gallery)
+        self.display = DisplayPanel(name='Gallery')
+        hpanels.set_end_child(self.display)
 
         button = gtk.Button(label='Quit')
         button.connect('clicked', lambda _: app.quit())
@@ -281,8 +331,6 @@ class MedievalWindow(gtk.ApplicationWindow):
         album = Album()
         self.album_list.append(album)
         self.albums.append(album)
-        row = self.albums.get_row_at_index(len(self.album_list)-1)
-        self.albums.drag_highlight_row(row)
         album.entry.grab_focus()
 
     def on_menu(self, simple_action, parameter):
