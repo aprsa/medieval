@@ -1,63 +1,12 @@
-import config
 import os
-import mariadb as mdb
+import logging
+
 import gi
 gi.require_version('Gtk', '4.0')
-
 from gi.repository import Gtk as gtk, Gdk as gdk, Gio as gio, GObject as gobject
 
-from PIL import Image
-
-__version__ = '0.1.0'
-
-
-dbconfig = {
-    'host': 'localhost',
-    'user': config.MDB_USER,
-    'password': config.MDB_PWD,
-    'database': config.MDB_DBNAME
-}
-
-
-def create_empty_database(dbc, overwrite=False):
-    """
-    @overwrite: delete existing database entries (default: False)
-
-    Creates tables in the database. If @overwrite is set to True, it deletes
-    any previous database entries.
-    """
-    if overwrite:
-        dbc.execute('drop table if exists media')
-        dbc.execute('drop table if exists albums_in_collections')
-        dbc.execute('drop table if exists collections')
-        dbc.execute('drop table if exists albums')
-    
-    dbc.execute('create table media (id int unsigned not null auto_increment primary key, filename varchar(16) not null, thumbnail varchar(16) not null)')
-    dbc.execute('create table collections (id int unsigned not null auto_increment, name varchar(16) not null, primary key(id))')
-    dbc.execute('create table albums (id int unsigned not null auto_increment, name varchar(100) not null, primary key(id))')
-    dbc.execute('create table albums_in_collections (collection_id int unsigned not null, album_id int unsigned not null, foreign key (collection_id) references collections(id), foreign key (album_id) references albums(id), unique (collection_id, album_id))')
-
-def add_media(dbc, path):
-    dbc.execute(f'insert into media (path) values ({path})')
-
-def add_collection(dbc, name):
-    dbc.execute(f'insert into collections (name) values ({name})')
-
-def add_album(dbc, name):
-    dbc.execute(f'insert into albums (name) values ({name})')
-
-def import_media_from_directory(path):
-    imported_media = []
-
-    files = os.listdir(path)
-    for f in files:
-        # try:
-        im = Image.open(path+'/'+f)
-        im.thumbnail((256, 256))
-        im.save(config.THUMBNAIL_DIR + f'/{f}')
-        imported_media.append(config.THUMBNAIL_DIR + f'/{f}')
-
-    return imported_media
+import config
+import engine
 
 class Album(gtk.Box):
     def __init__(self, *args, **kwargs):
@@ -85,23 +34,23 @@ class Album(gtk.Box):
         self.label.set_visible(True)
 
     def on_dnd_drop(self, drop_target, value, x, y):
-        print(f'in on_dnd_drop(); drop_target={drop_target}, value={value}, x={x}, y={y}')
+        logging.info(f'in on_dnd_drop(); drop_target={drop_target}, value={value}, x={x}, y={y}')
         print(list(value))
 
     def on_dnd_accept(self, drop_target, drop):
-        print(f'in on_dnd_accept(); drop_target={drop_target}, drop={drop}')
+        logging.info(f'in on_dnd_accept(); drop_target={drop_target}, drop={drop}')
         return True
 
     def on_dnd_enter(self, drop_target, x, y):
-        print(f'in on_dnd_enter(); drop_target={drop_target}, x={x}, y={y}')
+        logging.info(f'in on_dnd_enter(); drop_target={drop_target}, x={x}, y={y}')
         return gdk.DragAction.COPY
 
     def on_dnd_motion(self, drop_target, x, y):
-        print(f'in on_dnd_motion(); drop_target={drop_target}, x={x}, y={y}')
+        logging.info(f'in on_dnd_motion(); drop_target={drop_target}, x={x}, y={y}')
         return gdk.DragAction.COPY
 
     def on_dnd_leave(self, user_data):
-        print(f'in on_dnd_leave(); user_data={user_data}')
+        logging.info(f'in on_dnd_leave(); user_data={user_data}')
 
 class MediaFile(gtk.FlowBoxChild):
     def __init__(self, *args, file, **kwargs):
@@ -173,7 +122,7 @@ class DisplayPanel(gtk.Box):
         return f'<DisplayPanel {self.name}>'
 
     def on_media_selected(self, gallery, media_file):
-        print(f'on_media_selected(); gallery={gallery}, media_file={media_file}')
+        logging.info(f'on_media_selected(); gallery={gallery}, media_file={media_file}')
         filename = media_file.basename()
         self.gallery_frame.set_visible(False)
         picture = gtk.Picture.new_for_filename(f'photos/{filename}')
@@ -187,7 +136,7 @@ class DisplayPanel(gtk.Box):
         data = gio.ListStore()
         data.splice(0, 0, self.gallery.get_selected_children())
         num_items = data.get_n_items()
-        print(f'in on_dnd_prepare(); drag_source={drag_source}, x={x}, y={y}, data={data}, num_items={num_items}')
+        logging.info(f'in on_dnd_prepare(); drag_source={drag_source}, x={x}, y={y}, data={data}, num_items={num_items}')
         if num_items == 0:
             return None
 
@@ -202,13 +151,13 @@ class DisplayPanel(gtk.Box):
 
     def on_dnd_begin(self, drag_source, data):
         content = data.get_content()
-        print(f'in on_dnd_begin(); drag_source={drag_source}, data={data}, content={content}')
+        logging.info(f'in on_dnd_begin(); drag_source={drag_source}, data={data}, content={content}')
 
     def on_dnd_end(self, drag, drag_data, some_flag):
-        print(f'in on_dnd_end(); drag={drag}, drag_data={drag_data}, some_flag={some_flag}')
+        logging.info(f'in on_dnd_end(); drag={drag}, drag_data={drag_data}, some_flag={some_flag}')
 
     def on_keypress(self, controller, keyval, keycode, state):
-        print(f'controller={controller}, keyval={keyval}, keycode={keycode}, state={state}')
+        logging.info(f'controller={controller}, keyval={keyval}, keycode={keycode}, state={state}')
         if keycode == 9:  # ESC key
             self.picture_frame.set_visible(False)
             self.gallery_frame.set_visible(True)
@@ -216,7 +165,7 @@ class DisplayPanel(gtk.Box):
         return False
 
     def on_picture_clicked(self, click, n_press, x, y):
-        print(f'on_picture_clicked(): click={click}, n_press={n_press}, x={x}, y={y}')
+        logging.info(f'on_picture_clicked(): click={click}, n_press={n_press}, x={x}, y={y}')
         if n_press == 2:
             self.picture_frame.set_visible(False)
             self.gallery_frame.set_visible(True)
@@ -243,13 +192,13 @@ class Importer(gtk.FileChooserDialog):
 
     def dialog_response(self, widget, response):
         if response == gtk.ResponseType.OK:
-            media_list = import_media_from_directory(self.get_file().get_path())
+            media_list = engine.import_media_from_directory(self.get_file().get_path())
             for f in media_list:
                 child = MediaFile(file=f)
                 self.parent.display.gallery.insert(child, -1)
 
         elif response == gtk.ResponseType.CANCEL:
-            print("Cancel clicked")
+            logging.info("Cancel clicked")
 
         widget.close()
 
@@ -334,10 +283,10 @@ class MedievalWindow(gtk.ApplicationWindow):
         album.entry.grab_focus()
 
     def on_menu(self, simple_action, parameter):
-        print(f'simple_action: {simple_action}, parameter: {parameter}')
+        logging.info(f'simple_action: {simple_action}, parameter: {parameter}')
 
     def on_new_clicked(self, action, parameter, app):
-        print(f'new(); action={action}, parameter={parameter}, app={app}')
+        logging.info(f'on_new_clicked(); action={action}, parameter={parameter}, app={app}')
 
     def on_import_clicked(self, action, parameter, app):
         Importer(self, False)
@@ -347,36 +296,27 @@ class MedievalApp(gtk.Application):
         super().__init__(*args, application_id='org.medieval.Medieval', flags=gio.ApplicationFlags.FLAGS_NONE, **kwargs)
 
     def do_startup(self):
-        print('in do_startup()')
+        logging.info('in do_startup()')
         gtk.Application.do_startup(self)
 
-        if not os.path.exists(config.THUMBNAIL_DIR):
-            os.makedirs(config.THUMBNAIL_DIR, mode=0o755, exist_ok=True)
+        self.db = engine.MedievalDB()
         
-        try:
-            self.db = mdb.connect(**dbconfig)
-            self.dbc = self.db.cursor(dictionary=True) # for mariadb module
-            self.db.autocommit = True
-        except mdb.Error as e:
-            print(f'error connecting to the database: {e}')
-            exit(1)
-
         action = gio.SimpleAction.new('quit', None)
         action.connect('activate', self.on_quit)
         self.add_action(action)
 
     def do_activate(self):
-        print('in do_activate()')
+        logging.info('in do_activate()')
         main = self.props.active_window
         if not main:
             main = MedievalWindow(title='Medieval -- Media Organizer', application=self, default_width=1600, default_height=800)
         main.present()
 
     def do_open(self):
-        print('in do_open()')
+        logging.info('in do_open()')
 
     def do_shutdown(self):
-        print('in do_shutdown()')
+        logging.info('in do_shutdown()')
         gtk.Application.do_shutdown(self)
 
     def on_quit(self, action, param):
