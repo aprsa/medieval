@@ -11,13 +11,22 @@ import engine
 class Album(gtk.Box):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, orientation=gtk.Orientation.HORIZONTAL, **kwargs)
+
+        name = kwargs.get('name', None)
+
         self.label = gtk.Label(hexpand=False)
         self.append(self.label)
-        self.label.set_visible(False)
         self.entry = gtk.Entry()
         self.append(self.entry)
-        self.entry.set_visible(True)
         self.entry.connect('activate', self.on_entry_changed)
+
+        if name is None:
+            self.label.set_visible(False)
+            self.entry.set_visible(True)
+        else:
+            self.label.set_text(name)
+            self.label.set_visible(True)
+            self.entry.set_visible(False)
 
         dnd = gtk.DropTarget.new(gio.ListModel, gdk.DragAction.COPY)
         dnd.connect('drop', self.on_dnd_drop)
@@ -29,6 +38,7 @@ class Album(gtk.Box):
 
     def on_entry_changed(self, entry):
         name = entry.get_text()
+        medieval.engine.add_album(name=name)
         self.label.set_text(name)
         self.entry.set_visible(False)
         self.label.set_visible(True)
@@ -192,7 +202,7 @@ class Importer(gtk.FileChooserDialog):
 
     def dialog_response(self, widget, response):
         if response == gtk.ResponseType.OK:
-            media_list = engine.import_media_from_directory(self.get_file().get_path())
+            media_list = medieval.engine.import_media_from_directory(self.get_file().get_path())
             for f in media_list:
                 child = MediaFile(file=f)
                 self.parent.display.gallery.insert(child, -1)
@@ -207,7 +217,7 @@ class MedievalWindow(gtk.ApplicationWindow):
         super().__init__(*args, **kwargs)
         app = kwargs.get('application')
 
-        self.album_list = []
+        # self.album_list = []
         self.collection_list = []
 
         vbox = gtk.Box(orientation=gtk.Orientation.VERTICAL, spacing=5)
@@ -278,7 +288,7 @@ class MedievalWindow(gtk.ApplicationWindow):
 
     def on_new_album_clicked(self, user_data):
         album = Album()
-        self.album_list.append(album)
+        # self.album_list.append(album)
         self.albums.append(album)
         album.entry.grab_focus()
 
@@ -299,7 +309,7 @@ class MedievalApp(gtk.Application):
         logging.info('in do_startup()')
         gtk.Application.do_startup(self)
 
-        self.db = engine.MedievalDB()
+        self.engine = engine.MedievalDB()
         
         action = gio.SimpleAction.new('quit', None)
         action.connect('activate', self.on_quit)
@@ -310,6 +320,20 @@ class MedievalApp(gtk.Application):
         main = self.props.active_window
         if not main:
             main = MedievalWindow(title='Medieval -- Media Organizer', application=self, default_width=1600, default_height=800)
+
+            # Populate the gallery with thumbnails:
+            media_list = self.engine.query_media()
+            for f in media_list:
+                child = MediaFile(file=f'{config.THUMBNAIL_DIR}/{f}')
+                main.display.gallery.insert(child, -1)
+
+            # Populate albums:
+            album_list = self.engine.query_albums()
+            print(album_list)
+            for name in album_list:
+                album = Album(name=name)
+                main.albums.append(album)
+
         main.present()
 
     def do_open(self):
