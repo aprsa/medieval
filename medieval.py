@@ -10,9 +10,10 @@ import engine
 
 class Album(gtk.Box):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, orientation=gtk.Orientation.HORIZONTAL, **kwargs)
+        super().__init__(orientation=gtk.Orientation.HORIZONTAL)
 
         name = kwargs.get('name', None)
+        self.album_id = kwargs.get('album_id', None)
 
         self.label = gtk.Label(hexpand=False)
         self.append(self.label)
@@ -38,14 +39,15 @@ class Album(gtk.Box):
 
     def on_entry_changed(self, entry):
         name = entry.get_text()
-        medieval.engine.add_album(name=name)
+        self.album_id = medieval.engine.add_album(name=name)
         self.label.set_text(name)
         self.entry.set_visible(False)
         self.label.set_visible(True)
 
     def on_dnd_drop(self, drop_target, value, x, y):
         logging.info(f'in on_dnd_drop(); drop_target={drop_target}, value={value}, x={x}, y={y}')
-        print(list(value))
+        for entry in list(value):
+            medieval.engine.add_media_to_album(media_id=entry.media_id, album_id=self.album_id)
 
     def on_dnd_accept(self, drop_target, drop):
         logging.info(f'in on_dnd_accept(); drop_target={drop_target}, drop={drop}')
@@ -64,9 +66,11 @@ class Album(gtk.Box):
 
 class MediaFile(gtk.FlowBoxChild):
     def __init__(self, *args, file, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__()
 
         self.filename = file
+        self.media_id = kwargs.get('media_id', None)
+        self.timestamp = kwargs.get('timestamp', None)
 
         frame = gtk.Frame()
         self.set_child(frame)
@@ -203,8 +207,8 @@ class Importer(gtk.FileChooserDialog):
     def dialog_response(self, widget, response):
         if response == gtk.ResponseType.OK:
             media_list = medieval.engine.import_media_from_directory(self.get_file().get_path())
-            for f in media_list:
-                child = MediaFile(file=f)
+            for entry in media_list:
+                child = MediaFile(file=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}', media_id=entry['id'], timestamp=entry['timestamp'])
                 self.parent.display.gallery.insert(child, -1)
 
         elif response == gtk.ResponseType.CANCEL:
@@ -323,15 +327,14 @@ class MedievalApp(gtk.Application):
 
             # Populate the gallery with thumbnails:
             media_list = self.engine.query_media()
-            for f in media_list:
-                child = MediaFile(file=f'{config.THUMBNAIL_DIR}/{f}')
+            for entry in media_list:
+                child = MediaFile(file=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}', media_id=entry['id'], timestamp=entry['timestamp'])
                 main.display.gallery.insert(child, -1)
 
             # Populate albums:
             album_list = self.engine.query_albums()
-            print(album_list)
-            for name in album_list:
-                album = Album(name=name)
+            for entry in album_list:
+                album = Album(name=entry['name'], album_id=entry['id'])
                 main.albums.append(album)
 
         main.present()
@@ -347,5 +350,6 @@ class MedievalApp(gtk.Application):
         self.quit()
 
 if __name__ == '__main__':
+    logger = logging.Logger(name='medieval', level='INFO')
     medieval = MedievalApp()
     medieval.run()

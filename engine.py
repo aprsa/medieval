@@ -68,7 +68,7 @@ class MedievalDB:
         return False if len(entries) == 0 else True
 
     def import_media_from_directory(self, path):
-        imported_media = []
+        media_ids = []
 
         files = os.listdir(path)
         for f in files:
@@ -89,32 +89,36 @@ class MedievalDB:
             make = exif.get('Make', '')
             model = exif.get('Model', '')
 
-            self.add_media(filename, timestamp=timestamp, width=width, height=height, orientation=orientation, make=make, model=model)
+            media_id = self.add_media(filename, timestamp=timestamp, width=width, height=height, orientation=orientation, make=make, model=model)
+            media_ids.append(media_id)
 
             im.thumbnail((256, 256))
             im.save(config.THUMBNAIL_DIR + f'/{f}')
-            imported_media.append(config.THUMBNAIL_DIR + f'/{f}')
 
-        return imported_media
+        self.cursor.execute(f'select id,thumbnail,timestamp from media where id in {tuple(media_ids)} order by timestamp asc')
+        return self.cursor.fetchall()
 
     def add_media(self, filename, timestamp='NULL', width=None, height=None, orientation=None, make=None, model=None):
         self.cursor.execute(f'insert into media (filename,thumbnail,timestamp,width,height,orientation,make,model) values ("{os.path.abspath(filename)}","{os.path.basename(filename)}","{timestamp}",{width},{height},{orientation},"{make}","{model}")')
+        return self.cursor.lastrowid
+
+    def add_media_to_album(self, media_id, album_id):
+        self.cursor.execute(f'insert into media_in_albums (album_id,media_id) values ({album_id},{media_id})')
 
     def query_media(self):
-        self.cursor.execute(f'select thumbnail from media order by timestamp asc')
-        thumbnail_list = self.cursor.fetchall()
-        return [entry['thumbnail'] for entry in thumbnail_list]
+        self.cursor.execute(f'select id,thumbnail,timestamp from media order by timestamp asc')
+        return self.cursor.fetchall()
 
     def add_collection(self, name):
         self.cursor.execute(f'insert into collections (name) values ("{name}")')
 
     def add_album(self, name):
         self.cursor.execute(f'insert into albums (name) values ("{name}")')
+        return self.cursor.lastrowid
 
     def query_albums(self):
-        self.cursor.execute(f'select name from albums order by name asc')
-        name_list = self.cursor.fetchall()
-        return [entry['name'] for entry in name_list]
+        self.cursor.execute(f'select id,name from albums order by name asc')
+        return self.cursor.fetchall()
 
 def import_exif(image, taglist=ExifTags.TAGS):
     tags = dict()
