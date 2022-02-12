@@ -3,7 +3,7 @@
 
 import mariadb as mdb
 import os
-from PIL import Image, ExifTags
+from PIL import Image, ImageFilter, ExifTags
 import logging
 
 import config
@@ -71,8 +71,8 @@ class MedievalDB:
         media_ids = []
 
         files = os.listdir(path)
-        for f in files:
-            filename = os.path.abspath(path+'/'+f)
+        for file in files:
+            filename = os.path.abspath(path+'/'+file)
 
             # check if the file is already in the database:
             if self.media_in_database(filename):
@@ -93,7 +93,7 @@ class MedievalDB:
             media_ids.append(media_id)
 
             im.thumbnail((256, 256))
-            im.save(config.THUMBNAIL_DIR + f'/{f}')
+            im.save(config.THUMBNAIL_DIR + f'/{file}')
 
         self.cursor.execute(f'select id,thumbnail,timestamp from media where id in {tuple(media_ids)} order by timestamp asc')
         return self.cursor.fetchall()

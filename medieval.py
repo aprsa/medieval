@@ -5,6 +5,8 @@ import gi
 gi.require_version('Gtk', '4.0')
 from gi.repository import Gtk as gtk, Gdk as gdk, Gio as gio, GObject as gobject
 
+from PIL import Image, ImageFilter
+
 import config
 import engine
 
@@ -132,8 +134,85 @@ class DisplayPanel(gtk.Box):
         dnd.connect('drag-end', self.on_dnd_end)
         self.gallery.add_controller(dnd)
 
+        # Precompute portrait and landscape drop shadows:
+        self.drop_shadows = {}
+        self.drop_shadows['256x192'] = self.drop_shadow(size=(256, 192), iterations=10, border=8, offset=(0, 0))
+        self.drop_shadows['192x256'] = self.drop_shadow(size=(192, 256), iterations=10, border=8, offset=(0, 0))
+
     def __repr__(self):
         return f'<DisplayPanel {self.name}>'
+
+    def drop_shadow(self, size, iterations, border, offset, background_color=(0, 0, 0, 1)):
+        shadow = self.drop_shadows.get(f'{size[0]}x{size[1]}', None)
+        if shadow:
+            return shadow
+
+        # calculate the size of the shadow image
+        full_width  = size[0] + abs(offset[0]) + 2*border
+        full_height = size[1] + abs(offset[1]) + 2*border
+        
+        shadow = Image.new('RGBA', (full_width, full_height), background_color)
+        
+        shadow_left = border + max(offset[0], 0)
+        shadow_top  = border + max(offset[1], 0)
+
+        shadow.paste('black', [shadow_left, shadow_top, shadow_left + size[0], shadow_top  + size[1]])
+        
+        for i in range(iterations):
+            shadow = shadow.filter(ImageFilter.BLUR)
+
+        return shadow
+
+    def create_drag_icon(self, media):
+        # Set width and height as the largest thumbnail width/height capped at 256.
+        # Capping is un-necessary because thumbnails are already capped to 256, but
+        # it doesn't really hurt.
+        width = min(max([medium.width for medium in media]), 256)
+        height = min(max([medium.height for medium in media]), 256)
+        
+        # The final width and height need to accommodate for shadow size as well.
+        composite = Image.new(mode='RGBA', size=(width+16*min(len(media), 2), height+16*min(len(media), 2)), color=(0, 0, 0, 1))
+
+        # shadows = [self.drop_shadow(media[0].getbbox()[2:], 10, 8, (0, 0)), self.drop_shadow((width, height), 10, 8, (0, 0)), self.drop_shadow(media[-1].getbbox()[2:], 10, 8, (0, 0))]
+
+        if len(media) == 1:
+            shadow = self.drop_shadow(media[0].getbbox()[2:], 10, 8, (0, 0))
+            composite.paste(shadow, (0, 0, shadow.width, shadow.height))
+            composite.paste(media[0], (8, 8, 8+media[0].width, 8+media[0].height))
+        elif len(media) == 2:
+            shadow1 = self.drop_shadow(media[1].getbbox()[2:], 10, 8, (0, 0))
+            shadow2 = self.drop_shadow(media[0].getbbox()[2:], 10, 8, (0, 0))
+            composite.paste(shadow1, (16, 16, 16+shadow1.width, 16+shadow1.height))
+            composite.paste(media[1], (24, 24, 24+media[1].width, 24+media[1].height))
+            composite.alpha_composite(shadow2, (0, 0))
+            composite.paste(media[0], (8, 8, 8+media[0].width, 8+media[0].height))
+        elif len(media) == 3:
+            shadow1 = self.drop_shadow(media[2].getbbox()[2:], 10, 8, (0, 0))
+            shadow2 = self.drop_shadow(media[0].getbbox()[2:], 10, 8, (0, 0))
+            composite.paste(shadow1, (16, 16, 16+shadow1.width, 16+shadow1.height))
+            composite.paste(media[1], (24, 24, 24+media[1].width, 24+media[1].height))
+            composite.alpha_composite(shadow2, (8, 8))
+            composite.paste('grey', (16, 16, 16+media[1].width, 16+media[1].height))
+            composite.alpha_composite(shadow2, (0, 0))
+            composite.paste(media[0], (8, 8, 8+media[0].width, 8+media[0].height))
+        elif len(media) == 4:
+            shadow1 = self.drop_shadow(media[-1].getbbox()[2:], 10, 8, (0, 0))
+            shadow2 = self.drop_shadow(media[0].getbbox()[2:], 10, 8, (0, 0))
+            composite.paste(shadow1, (16, 16, 16+shadow1.width, 16+shadow1.height))
+            composite.paste(media[-1], (24, 24, 24+media[1].width, 24+media[1].height))
+            composite.alpha_composite(shadow2, (10, 10))
+            composite.paste('grey', (18, 18, 18+media[1].width, 18+media[1].height))
+            composite.alpha_composite(shadow2, (6, 6))
+            composite.paste('grey', (14, 14, 14+media[1].width, 14+media[1].height))
+            composite.alpha_composite(shadow2, (0, 0))
+            composite.paste(media[0], (8, 8, 8+media[0].width, 8+media[0].height))
+        # for i in range(thno):
+            # thumbnails[i].putalpha(alpha[i])
+            # im.alpha_composite(thumbnails[i], (16*i, 16*i))
+            # im.paste(thumbnails[i], box=())
+
+        composite.save(config.THUMBNAIL_DIR+'/drag_icon.png')
+        return composite
 
     def on_media_selected(self, gallery, media_file):
         logging.info(f'on_media_selected(); gallery={gallery}, media_file={media_file}')
@@ -147,20 +226,24 @@ class DisplayPanel(gtk.Box):
         self.picture_frame.set_visible(True)
 
     def on_dnd_prepare(self, drag_source, x, y):
-        data = gio.ListStore()
-        data.splice(0, 0, self.gallery.get_selected_children())
-        num_items = data.get_n_items()
-        logging.info(f'in on_dnd_prepare(); drag_source={drag_source}, x={x}, y={y}, data={data}, num_items={num_items}')
+        media = gio.ListStore()
+        media.splice(0, 0, self.gallery.get_selected_children())
+        num_items = media.get_n_items()
+        logging.info(f'in on_dnd_prepare(); drag_source={drag_source}, x={x}, y={y}, data={media}, num_items={num_items}')
         if num_items == 0:
             return None
 
-        paintable = data[0].image.get_paintable()  # TODO: make this nicer for multiple selections
-        drag_image = gtk.Image.new_from_paintable(paintable)
-        drag_image.set_opacity(0.5)  # FIXME: not sure why transparency doesn't work
+        passed_data = gobject.Value(gio.ListModel, media)
+        content = gdk.ContentProvider.new_for_value(passed_data)
+
+        thumbnails = [Image.open(entry.filename) for entry in self.gallery.get_selected_children()]
+        self.create_drag_icon(thumbnails)
+        drag_image = gtk.Image.new_from_file(config.THUMBNAIL_DIR+'/drag_icon.png')
+
+        # paintable = media[0].image.get_paintable()  # TODO: make this nicer for multiple selections
+        # drag_image = gtk.Image.new_from_paintable(paintable)
         drag_source.set_icon(drag_image.get_paintable(), 128, 128)  # TODO: consider a better hot_x, hot_y default
         
-        passed_data = gobject.Value(gio.ListModel, data)
-        content = gdk.ContentProvider.new_for_value(passed_data)
         return content
 
     def on_dnd_begin(self, drag_source, data):
