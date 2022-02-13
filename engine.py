@@ -105,12 +105,16 @@ class MedievalDB:
     def add_media_to_album(self, media_id, album_id):
         self.cursor.execute(f'insert into media_in_albums (album_id,media_id) values ({album_id},{media_id})')
 
+    def add_album_to_collection(self, album_id, collection_id):
+        self.cursor.execute(f'insert into albums_in_collections (collection_id,album_id) values ({collection_id},{album_id})')
+
     def query_media(self):
         self.cursor.execute(f'select id,thumbnail,timestamp from media order by timestamp asc')
         return self.cursor.fetchall()
 
     def add_collection(self, name):
         self.cursor.execute(f'insert into collections (name) values ("{name}")')
+        return self.cursor.lastrowid
 
     def add_album(self, name):
         self.cursor.execute(f'insert into albums (name) values ("{name}")')
@@ -118,6 +122,10 @@ class MedievalDB:
 
     def query_albums(self):
         self.cursor.execute(f'select id,name from albums order by name asc')
+        return self.cursor.fetchall()
+
+    def query_collections(self):
+        self.cursor.execute(f'select id,name from collections order by name asc')
         return self.cursor.fetchall()
 
 def import_exif(image, taglist=ExifTags.TAGS):

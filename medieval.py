@@ -10,6 +10,63 @@ from PIL import Image, ImageFilter
 import config
 import engine
 
+
+class Collection(gtk.Box):
+    def __init__(self, *args, **kwargs):
+        super().__init__(orientation=gtk.Orientation.HORIZONTAL)
+
+        name = kwargs.get('name', None)
+        self.collection_id = kwargs.get('collection_id', None)
+
+        self.label = gtk.Label(hexpand=False)
+        self.append(self.label)
+        self.entry = gtk.Entry()
+        self.append(self.entry)
+        self.entry.connect('activate', self.on_entry_changed)
+
+        if name is None:
+            self.label.set_visible(False)
+            self.entry.set_visible(True)
+        else:
+            self.label.set_text(name)
+            self.label.set_visible(True)
+            self.entry.set_visible(False)
+
+        dnd_a2c = gtk.DropTarget.new(gio.ListModel, gdk.DragAction.COPY)
+        dnd_a2c.connect('drop', self.on_dnd_drop)
+        dnd_a2c.connect('accept', self.on_dnd_accept)
+        dnd_a2c.connect('enter', self.on_dnd_enter)
+        dnd_a2c.connect('motion', self.on_dnd_motion)
+        dnd_a2c.connect('leave', self.on_dnd_leave)
+        self.add_controller(dnd_a2c)
+
+    def on_entry_changed(self, entry):
+        name = entry.get_text()
+        self.collection_id = medieval.engine.add_collection(name=name)
+        self.label.set_text(name)
+        self.entry.set_visible(False)
+        self.label.set_visible(True)
+
+    def on_dnd_drop(self, drop_target, value, x, y):
+        logging.info(f'in on_dnd_drop(); drop_target={drop_target}, value={value}, x={x}, y={y}')
+        for entry in list(value):
+            medieval.engine.add_album_to_collection(album_id=entry.album_id, collection_id=self.collection_id)
+
+    def on_dnd_accept(self, drop_target, drop):
+        logging.info(f'in on_dnd_accept(); drop_target={drop_target}, drop={drop}')
+        return True
+
+    def on_dnd_enter(self, drop_target, x, y):
+        logging.info(f'in on_dnd_enter(); drop_target={drop_target}, x={x}, y={y}')
+        return gdk.DragAction.COPY
+
+    def on_dnd_motion(self, drop_target, x, y):
+        logging.info(f'in on_dnd_motion(); drop_target={drop_target}, x={x}, y={y}')
+        return gdk.DragAction.COPY
+
+    def on_dnd_leave(self, user_data):
+        logging.info(f'in on_dnd_leave(); user_data={user_data}')
+
 class Album(gtk.Box):
     def __init__(self, *args, **kwargs):
         super().__init__(orientation=gtk.Orientation.HORIZONTAL)
@@ -31,13 +88,22 @@ class Album(gtk.Box):
             self.label.set_visible(True)
             self.entry.set_visible(False)
 
-        dnd = gtk.DropTarget.new(gio.ListModel, gdk.DragAction.COPY)
-        dnd.connect('drop', self.on_dnd_drop)
-        dnd.connect('accept', self.on_dnd_accept)
-        dnd.connect('enter', self.on_dnd_enter)
-        dnd.connect('motion', self.on_dnd_motion)
-        dnd.connect('leave', self.on_dnd_leave)
-        self.add_controller(dnd)
+        # Controller for dragging media to albums:
+        dnd_m2a = gtk.DropTarget.new(gio.ListModel, gdk.DragAction.COPY)
+        dnd_m2a.connect('drop', self.on_dnd_drop)
+        dnd_m2a.connect('accept', self.on_dnd_accept)
+        dnd_m2a.connect('enter', self.on_dnd_enter)
+        dnd_m2a.connect('motion', self.on_dnd_motion)
+        dnd_m2a.connect('leave', self.on_dnd_leave)
+        self.add_controller(dnd_m2a)
+
+        # Controller for dragging albums to collections:
+        dnd_a2c = gtk.DragSource.new()
+        dnd_a2c.set_actions(gdk.DragAction.COPY)
+        dnd_a2c.connect('prepare', self.on_dnd_prepare)
+        dnd_a2c.connect('drag-begin', self.on_dnd_begin)
+        dnd_a2c.connect('drag-end', self.on_dnd_end)
+        self.add_controller(dnd_a2c)
 
     def on_entry_changed(self, entry):
         name = entry.get_text()
@@ -45,6 +111,31 @@ class Album(gtk.Box):
         self.label.set_text(name)
         self.entry.set_visible(False)
         self.label.set_visible(True)
+
+    def on_dnd_prepare(self, drag_source, x, y):
+        album = gio.ListStore()
+        album.append(self)
+        logging.info(f'in on_dnd_prepare(); drag_source={drag_source}, x={x}, y={y}, data={album}')
+
+        passed_data = gobject.Value(gio.ListModel, album)
+        content = gdk.ContentProvider.new_for_value(passed_data)
+
+        # thumbnails = [Image.open(entry.filename) for entry in self.gallery.get_selected_children()]
+        # self.create_drag_icon(thumbnails)
+        # drag_image = gtk.Image.new_from_file(config.THUMBNAIL_DIR+'/drag_icon.png')
+
+        # paintable = media[0].image.get_paintable()  # TODO: make this nicer for multiple selections
+        # drag_image = gtk.Image.new_from_paintable(paintable)
+        # drag_source.set_icon(drag_image.get_paintable(), 128, 128)  # TODO: consider a better hot_x, hot_y default
+        
+        return content
+
+    def on_dnd_begin(self, drag_source, data):
+        content = data.get_content()
+        logging.info(f'in on_dnd_begin(); drag_source={drag_source}, data={data}, content={content}')
+
+    def on_dnd_end(self, drag, drag_data, some_flag):
+        logging.info(f'in on_dnd_end(); drag={drag}, drag_data={drag_data}, some_flag={some_flag}')
 
     def on_dnd_drop(self, drop_target, value, x, y):
         logging.info(f'in on_dnd_drop(); drop_target={drop_target}, value={value}, x={x}, y={y}')
@@ -350,6 +441,7 @@ class MedievalWindow(gtk.ApplicationWindow):
         cbbox.append(self.collections)
 
         new_collection_button = gtk.Button.new_with_label('Add Collection...')
+        new_collection_button.connect('clicked', self.on_new_collection_clicked)
         cbbox.append(new_collection_button)
 
         albums_frame = gtk.Frame(label='Albums')
@@ -373,9 +465,13 @@ class MedievalWindow(gtk.ApplicationWindow):
         vbox.append(button)
         self.set_title(kwargs.get('title'))
 
+    def on_new_collection_clicked(self, user_data):
+        collection = Collection()
+        self.collections.append(collection)
+        collection.entry.grab_focus()
+
     def on_new_album_clicked(self, user_data):
         album = Album()
-        # self.album_list.append(album)
         self.albums.append(album)
         album.entry.grab_focus()
 
@@ -404,23 +500,29 @@ class MedievalApp(gtk.Application):
 
     def do_activate(self):
         logging.info('in do_activate()')
-        main = self.props.active_window
-        if not main:
-            main = MedievalWindow(title='Medieval -- Media Organizer', application=self, default_width=1600, default_height=800)
+        main_window = self.props.active_window
+        if not main_window:
+            main_window = MedievalWindow(title='Medieval -- Media Organizer', application=self, default_width=1600, default_height=800)
 
             # Populate the gallery with thumbnails:
             media_list = self.engine.query_media()
             for entry in media_list:
                 child = MediaFile(file=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}', media_id=entry['id'], timestamp=entry['timestamp'])
-                main.display.gallery.insert(child, -1)
+                main_window.display.gallery.insert(child, -1)
+
+            # Populate collections:
+            collection_list = self.engine.query_collections()
+            for entry in collection_list:
+                collection = Collection(name=entry['name'], collection_id=entry['id'])
+                main_window.collections.append(collection)
 
             # Populate albums:
             album_list = self.engine.query_albums()
             for entry in album_list:
                 album = Album(name=entry['name'], album_id=entry['id'])
-                main.albums.append(album)
+                main_window.albums.append(album)
 
-        main.present()
+        main_window.present()
 
     def do_open(self):
         logging.info('in do_open()')
