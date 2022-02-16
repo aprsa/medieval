@@ -3,7 +3,7 @@ import logging
 
 import gi
 gi.require_version('Gtk', '4.0')
-from gi.repository import Gtk as gtk, Gdk as gdk, Gio as gio, GObject as gobject
+from gi.repository import Gtk as gtk, Gdk as gdk, Gio as gio, GObject as gobject, GLib as glib
 
 from PIL import Image, ImageFilter
 
@@ -286,7 +286,7 @@ class DisplayPanel(gtk.Box):
             composite.paste('grey', (16, 16, 16+media[1].width, 16+media[1].height))
             composite.alpha_composite(shadow2, (0, 0))
             composite.paste(media[0], (8, 8, 8+media[0].width, 8+media[0].height))
-        elif len(media) == 4:
+        else:
             shadow1 = self.drop_shadow(media[-1].getbbox()[2:], 10, 8, (0, 0))
             shadow2 = self.drop_shadow(media[0].getbbox()[2:], 10, 8, (0, 0))
             composite.paste(shadow1, (16, 16, 16+shadow1.width, 16+shadow1.height))
@@ -302,6 +302,8 @@ class DisplayPanel(gtk.Box):
             # im.alpha_composite(thumbnails[i], (16*i, 16*i))
             # im.paste(thumbnails[i], box=())
 
+        # buffer = glib.Bytes.new(composite.tobytes())
+        # pixbuf = gdk.Pixbuf.new_from_data(buffer.get_data(), gdk.Pixbuf.Colorspace)
         composite.save(config.THUMBNAIL_DIR+'/drag_icon.png')
         return composite
 
@@ -438,6 +440,7 @@ class MedievalWindow(gtk.ApplicationWindow):
         collections_frame.set_child(cbbox)
 
         self.collections = gtk.ListBox(activate_on_single_click=True, selection_mode=gtk.SelectionMode.BROWSE, show_separators=True, vexpand=True)
+        self.collections.connect('row_activated', self.on_collection_selected)
         cbbox.append(self.collections)
 
         new_collection_button = gtk.Button.new_with_label('Add Collection...')
@@ -451,6 +454,7 @@ class MedievalWindow(gtk.ApplicationWindow):
         albums_frame.set_child(abbox)
 
         self.albums = gtk.ListBox(activate_on_single_click=True, selection_mode=gtk.SelectionMode.BROWSE, show_separators=True, vexpand=True)
+        self.albums.connect('row_activated', self.on_album_selected)
         abbox.append(self.albums)
 
         new_album_button = gtk.Button.new_with_label('Add Album...')
@@ -465,15 +469,23 @@ class MedievalWindow(gtk.ApplicationWindow):
         vbox.append(button)
         self.set_title(kwargs.get('title'))
 
-    def on_new_collection_clicked(self, user_data):
+    def on_new_collection_clicked(self, button):
+        print(f'on_new_collection_clicked(), button={button}')
         collection = Collection()
         self.collections.append(collection)
         collection.entry.grab_focus()
 
-    def on_new_album_clicked(self, user_data):
+    def on_collection_selected(self, listbox, row):
+        print(f'on_collection_selected(), listbox={listbox}, row={row}, collection_id={row.get_child().collection_id}')
+
+    def on_new_album_clicked(self, button):
+        print(f'on_new_album_clicked(), button={button}')
         album = Album()
         self.albums.append(album)
         album.entry.grab_focus()
+
+    def on_album_selected(self, listbox, row):
+        print(f'on_album_selected(), listbox={listbox}, row={row}, album_id={row.get_child().album_id}')
 
     def on_menu(self, simple_action, parameter):
         logging.info(f'simple_action: {simple_action}, parameter: {parameter}')
