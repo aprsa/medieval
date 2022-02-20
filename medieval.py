@@ -158,10 +158,11 @@ class Album(gtk.Box):
         logging.info(f'in on_dnd_leave(); user_data={user_data}')
 
 class MediaFile(gtk.FlowBoxChild):
-    def __init__(self, *args, file, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__()
 
-        self.filename = file
+        self.filename = kwargs.get('filename', None)
+        self.thumbnail = kwargs.get('thumbnail', None)
         self.media_id = kwargs.get('media_id', None)
         self.timestamp = kwargs.get('timestamp', None)
 
@@ -171,11 +172,11 @@ class MediaFile(gtk.FlowBoxChild):
         vbox = gtk.Box(orientation=gtk.Orientation.VERTICAL)
         frame.set_child(vbox)
 
-        self.image = gtk.Image.new_from_file(file)
+        self.image = gtk.Image.new_from_file(self.thumbnail)
         self.image.set_pixel_size(256)
         vbox.append(self.image)
 
-        label = gtk.Label.new(file[file.rfind('/')+1:])
+        label = gtk.Label.new(self.filename[self.filename.rfind('/')+1:])
         vbox.append(label)
 
     def __repr__(self):
@@ -184,37 +185,68 @@ class MediaFile(gtk.FlowBoxChild):
     def basename(self):
         return os.path.basename(self.filename)
 
-class DisplayPanel(gtk.Box):
+class DisplayPanel(gtk.Paned):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, orientation=gtk.Orientation.HORIZONTAL, **kwargs)
+        super().__init__(orientation=gtk.Orientation.HORIZONTAL)
 
+        gallery_panel = gtk.Box(orientation=gtk.Orientation.HORIZONTAL)
+        self.set_start_child(gallery_panel)
+
+        # timeline frame (visible by default):
+        self.timeline = gtk.FlowBox(homogeneous=True, column_spacing=5, row_spacing=5, valign=gtk.Align.START, halign=gtk.Align.FILL, activate_on_single_click=False, selection_mode=gtk.SelectionMode.MULTIPLE)
+        self.timeline.connect('child-activated', self.on_media_selected)
+        
+        scrolled_panel = gtk.ScrolledWindow(hscrollbar_policy=gtk.PolicyType.NEVER, vscrollbar_policy=gtk.PolicyType.AUTOMATIC, hexpand=True, vexpand=True)
+        scrolled_panel.set_child(self.timeline)
+                
+        self.timeline_frame = gtk.Frame(label='Timeline', hexpand=True, vexpand=True)
+        self.timeline_frame.set_child(scrolled_panel)
+        gallery_panel.append(self.timeline_frame)
+
+        # gallery (album) frame (invisible by default):
         self.gallery = gtk.FlowBox(homogeneous=True, column_spacing=5, row_spacing=5, valign=gtk.Align.START, halign=gtk.Align.FILL, activate_on_single_click=False, selection_mode=gtk.SelectionMode.MULTIPLE)
         self.gallery.connect('child-activated', self.on_media_selected)
-
         scrolled_panel = gtk.ScrolledWindow(hscrollbar_policy=gtk.PolicyType.NEVER, vscrollbar_policy=gtk.PolicyType.AUTOMATIC, hexpand=True, vexpand=True)
         scrolled_panel.set_child(self.gallery)
 
-        self.gallery_frame = gtk.Frame(label='Gallery', hexpand=True, vexpand=True)
-        self.gallery_frame.set_child(scrolled_panel)
+        gallery_frame = gtk.Frame(label='Album', hexpand=True, vexpand=True)
+        gallery_frame.set_child(scrolled_panel)
+        # gallery_panel.append(self.gallery_frame)
 
-        self.append(self.gallery_frame)
+        self.gallery_frame = gtk.Overlay()
+        self.gallery_frame.set_child(gallery_frame)
+        gallery_panel.append(self.gallery_frame)
+        self.gallery_frame.set_visible(False)
 
+        close_button = gtk.Button.new_from_icon_name('window-close')
+        close_button.set_halign(gtk.Align.END)
+        close_button.set_valign(gtk.Align.START)
+        close_button.connect('clicked', self.on_album_closed)
+        self.gallery_frame.add_overlay(close_button)
+
+        # picture area (invisible by default):
         self.picture_area = gtk.ScrolledWindow(hscrollbar_policy=gtk.PolicyType.AUTOMATIC, vscrollbar_policy=gtk.PolicyType.AUTOMATIC)
-        # self.picture_area.connect('')
-
         gesture = gtk.GestureClick.new()
         gesture.connect('pressed', self.on_picture_clicked)
         self.picture_area.add_controller(gesture)
 
-        self.picture_frame = gtk.Frame(label='Image', hexpand=True, vexpand=True)
+        picture_frame = gtk.Frame(label='Image', hexpand=True, vexpand=True)
+        self.picture_frame = gtk.Overlay()
+        self.picture_frame.set_child(picture_frame)
         self.picture_frame.set_visible(False)
-        self.picture_frame.set_child(self.picture_area)
+        
+        close_button = gtk.Button.new_from_icon_name('window-close')
+        close_button.set_halign(gtk.Align.END)
+        close_button.set_valign(gtk.Align.START)
+        close_button.connect('clicked', self.on_picture_frame_closed)
+        self.picture_frame.add_overlay(close_button)
+        
+        picture_frame.set_child(self.picture_area)
+        self.set_end_child(self.picture_frame)
 
         keypress = gtk.EventControllerKey.new()
         keypress.connect('key-pressed', self.on_keypress)
         self.picture_area.add_controller(keypress)
-
-        self.append(self.picture_frame)
 
         self.name = kwargs.get('name', 'default')
 
@@ -223,7 +255,12 @@ class DisplayPanel(gtk.Box):
         dnd.connect('prepare', self.on_dnd_prepare)
         dnd.connect('drag-begin', self.on_dnd_begin)
         dnd.connect('drag-end', self.on_dnd_end)
-        self.gallery.add_controller(dnd)
+        self.timeline.add_controller(dnd)
+
+        # keep a tab on what's visible so that we can revert when necessary:
+        self.picture_state = False
+        self.timeline_state = None
+        self.gallery_state = None
 
         # Precompute portrait and landscape drop shadows:
         self.drop_shadows = {}
@@ -309,18 +346,29 @@ class DisplayPanel(gtk.Box):
 
     def on_media_selected(self, gallery, media_file):
         logging.info(f'on_media_selected(); gallery={gallery}, media_file={media_file}')
-        filename = media_file.basename()
-        self.gallery_frame.set_visible(False)
-        picture = gtk.Picture.new_for_filename(f'photos/{filename}')
+        picture = gtk.Picture.new_for_filename(media_file.filename)
         picture.set_can_shrink(True)
-        self.picture_frame.set_label(filename)
+        self.picture_frame.get_child().set_label(media_file.basename())
         self.picture_area.set_child(picture)
         self.picture_area.grab_focus()
         self.picture_frame.set_visible(True)
 
+    def on_album_closed(self, button):
+        logging.info(f'on_album_closed(): self={self}, button={button}')
+        self.gallery_frame.set_visible(False)
+        self.timeline_frame.set_visible(True)
+        medieval.main_window.albums.select_row(None)
+
+    def on_picture_frame_closed(self, button):
+        logging.info(f'on_picture_frame_closed(): self={self}, button={button}')
+        self.picture_frame.set_visible(False)
+        # self.timeline_frame.set_visible(self.timeline_state)
+        # self.gallery_frame.set_visible(self.gallery_state)
+
+
     def on_dnd_prepare(self, drag_source, x, y):
         media = gio.ListStore()
-        media.splice(0, 0, self.gallery.get_selected_children())
+        media.splice(0, 0, self.timeline.get_selected_children())
         num_items = media.get_n_items()
         logging.info(f'in on_dnd_prepare(); drag_source={drag_source}, x={x}, y={y}, data={media}, num_items={num_items}')
         if num_items == 0:
@@ -329,7 +377,7 @@ class DisplayPanel(gtk.Box):
         passed_data = gobject.Value(gio.ListModel, media)
         content = gdk.ContentProvider.new_for_value(passed_data)
 
-        thumbnails = [Image.open(entry.filename) for entry in self.gallery.get_selected_children()]
+        thumbnails = [Image.open(entry.thumbnail) for entry in self.timeline.get_selected_children()]
         self.create_drag_icon(thumbnails)
         drag_image = gtk.Image.new_from_file(config.THUMBNAIL_DIR+'/drag_icon.png')
 
@@ -357,8 +405,17 @@ class DisplayPanel(gtk.Box):
     def on_picture_clicked(self, click, n_press, x, y):
         logging.info(f'on_picture_clicked(): click={click}, n_press={n_press}, x={x}, y={y}')
         if n_press == 2:
-            self.picture_frame.set_visible(False)
-            self.gallery_frame.set_visible(True)
+            # self.picture_frame.set_visible(False)
+            if self.picture_state == False:
+                self.gallery_state = self.gallery_frame.get_visible()
+                self.timeline_state = self.timeline_frame.get_visible()
+                self.gallery_frame.set_visible(False)
+                self.timeline_frame.set_visible(False)
+                self.picture_state = True
+            else:
+                self.timeline_frame.set_visible(self.timeline_state)
+                self.gallery_frame.set_visible(self.gallery_state)
+                self.picture_state = False
 
 class Importer(gtk.FileChooserDialog):
     def __init__(self, parent, select_multiple):
@@ -384,8 +441,8 @@ class Importer(gtk.FileChooserDialog):
         if response == gtk.ResponseType.OK:
             media_list = medieval.engine.import_media_from_directory(self.get_file().get_path())
             for entry in media_list:
-                child = MediaFile(file=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}', media_id=entry['id'], timestamp=entry['timestamp'])
-                self.parent.display.gallery.insert(child, -1)
+                child = MediaFile(filename=entry['filename'], thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg', media_id=entry['id'], timestamp=entry['timestamp'])
+                self.parent.display.timeline.insert(child, -1)
 
         elif response == gtk.ResponseType.CANCEL:
             logging.info("Cancel clicked")
@@ -396,9 +453,6 @@ class MedievalWindow(gtk.ApplicationWindow):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         app = kwargs.get('application')
-
-        # self.album_list = []
-        self.collection_list = []
 
         vbox = gtk.Box(orientation=gtk.Orientation.VERTICAL, spacing=5)
         self.set_child(vbox)
@@ -457,6 +511,11 @@ class MedievalWindow(gtk.ApplicationWindow):
         self.albums.connect('row_activated', self.on_album_selected)
         abbox.append(self.albums)
 
+        gesture = gtk.GestureClick.new()
+        gesture.set_button(3)
+        gesture.connect('pressed', self.on_album_rightclicked)
+        self.albums.add_controller(gesture)
+
         new_album_button = gtk.Button.new_with_label('Add Album...')
         new_album_button.connect('clicked', self.on_new_album_clicked)
         abbox.append(new_album_button)
@@ -485,7 +544,24 @@ class MedievalWindow(gtk.ApplicationWindow):
         album.entry.grab_focus()
 
     def on_album_selected(self, listbox, row):
-        print(f'on_album_selected(), listbox={listbox}, row={row}, album_id={row.get_child().album_id}')
+        logging.info(f'on_album_selected(), listbox={listbox}, row={row}, album_id={row.get_child().album_id}')
+
+        # remove old media:
+        self.display.gallery.select_all()
+        for child in self.display.gallery.get_selected_children():
+            self.display.gallery.remove(child)
+
+        # populate gallery with new media:
+        media = medieval.engine.query_media(album_id=row.get_child().album_id)
+        for entry in media:
+            child = MediaFile(filename=entry['filename'], thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg', media_id=entry['id'], timestamp=entry['timestamp'])
+            self.display.gallery.insert(child, -1)
+
+        self.display.timeline_frame.set_visible(False)
+        self.display.gallery_frame.set_visible(True)
+
+    def on_album_rightclicked(self, click, n_press, x, y):
+        print(f'on_album_clicked(): self={self}, click={click}, n_press={n_press}, x={x}, y={y}')
 
     def on_menu(self, simple_action, parameter):
         logging.info(f'simple_action: {simple_action}, parameter: {parameter}')
@@ -512,29 +588,29 @@ class MedievalApp(gtk.Application):
 
     def do_activate(self):
         logging.info('in do_activate()')
-        main_window = self.props.active_window
-        if not main_window:
-            main_window = MedievalWindow(title='Medieval -- Media Organizer', application=self, default_width=1600, default_height=800)
+        self.main_window = self.props.active_window
+        if not self.main_window:
+            self.main_window = MedievalWindow(title='Medieval -- Media Organizer', application=self, default_width=1600, default_height=800)
 
-            # Populate the gallery with thumbnails:
+            # Populate the timeline with thumbnails:
             media_list = self.engine.query_media()
             for entry in media_list:
-                child = MediaFile(file=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}', media_id=entry['id'], timestamp=entry['timestamp'])
-                main_window.display.gallery.insert(child, -1)
+                child = MediaFile(filename=entry['filename'], thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg', media_id=entry['id'], timestamp=entry['timestamp'])
+                self.main_window.display.timeline.insert(child, -1)
 
             # Populate collections:
             collection_list = self.engine.query_collections()
             for entry in collection_list:
                 collection = Collection(name=entry['name'], collection_id=entry['id'])
-                main_window.collections.append(collection)
+                self.main_window.collections.append(collection)
 
             # Populate albums:
             album_list = self.engine.query_albums()
             for entry in album_list:
                 album = Album(name=entry['name'], album_id=entry['id'])
-                main_window.albums.append(album)
+                self.main_window.albums.append(album)
 
-        main_window.present()
+        self.main_window.present()
 
     def do_open(self):
         logging.info('in do_open()')
@@ -547,6 +623,7 @@ class MedievalApp(gtk.Application):
         self.quit()
 
 if __name__ == '__main__':
-    logger = logging.Logger(name='medieval', level='INFO')
+    logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.INFO, handlers=[logging.StreamHandler(),]) #, logging.FileHandler('broker.log')])
+    # logger = logging.Logger(name='medieval', clevel='INFO')
     medieval = MedievalApp()
     medieval.run()

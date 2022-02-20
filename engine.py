@@ -3,6 +3,7 @@
 
 import mariadb as mdb
 import os
+import random, string
 from PIL import Image, ImageFilter, ExifTags
 import logging
 
@@ -62,6 +63,13 @@ class MedievalDB:
         self.cursor.execute('create table media_in_albums (album_id int unsigned not null, media_id int unsigned not null, foreign key (album_id) references albums(id), foreign key (media_id) references media(id), unique (album_id, media_id))')
         self.cursor.execute('create table albums_in_collections (collection_id int unsigned not null, album_id int unsigned not null, foreign key (collection_id) references collections(id), foreign key (album_id) references albums(id), unique (collection_id, album_id))')
 
+    def generate_thumbnail(self, filename, image):
+        thname = ''.join(random.choices(string.ascii_lowercase + string.digits, k=16))
+        image.thumbnail((256, 256))
+        image.save(config.THUMBNAIL_DIR + f'/{thname}.jpg')
+
+        return thname
+
     def media_in_database(self, filename):
         self.cursor.execute(f'select * from media where filename="{filename}"')
         entries = self.cursor.fetchall()
@@ -89,17 +97,17 @@ class MedievalDB:
             make = exif.get('Make', '')
             model = exif.get('Model', '')
 
-            media_id = self.add_media(filename, timestamp=timestamp, width=width, height=height, orientation=orientation, make=make, model=model)
+            thumbnail = self.generate_thumbnail(filename, im)
+
+            media_id = self.add_media(filename, thumbnail, timestamp=timestamp, width=width, height=height, orientation=orientation, make=make, model=model)
             media_ids.append(media_id)
 
-            im.thumbnail((256, 256))
-            im.save(config.THUMBNAIL_DIR + f'/{file}')
 
-        self.cursor.execute(f'select id,thumbnail,timestamp from media where id in {tuple(media_ids)} order by timestamp asc')
+        self.cursor.execute(f'select * from media where id in {tuple(media_ids)} order by timestamp asc')
         return self.cursor.fetchall()
 
-    def add_media(self, filename, timestamp='NULL', width=None, height=None, orientation=None, make=None, model=None):
-        self.cursor.execute(f'insert into media (filename,thumbnail,timestamp,width,height,orientation,make,model) values ("{os.path.abspath(filename)}","{os.path.basename(filename)}","{timestamp}",{width},{height},{orientation},"{make}","{model}")')
+    def add_media(self, filename, thumbnail, timestamp='NULL', width=None, height=None, orientation=None, make=None, model=None):
+        self.cursor.execute(f'insert into media (filename,thumbnail,timestamp,width,height,orientation,make,model) values ("{os.path.abspath(filename)}","{thumbnail}","{timestamp}",{width},{height},{orientation},"{make}","{model}")')
         return self.cursor.lastrowid
 
     def add_media_to_album(self, media_id, album_id):
@@ -108,8 +116,11 @@ class MedievalDB:
     def add_album_to_collection(self, album_id, collection_id):
         self.cursor.execute(f'insert into albums_in_collections (collection_id,album_id) values ({collection_id},{album_id})')
 
-    def query_media(self):
-        self.cursor.execute(f'select id,thumbnail,timestamp from media order by timestamp asc')
+    def query_media(self, album_id=None):
+        if album_id is None:
+            self.cursor.execute(f'select * from media order by timestamp asc')
+        else:
+            self.cursor.execute(f'select * from media where id in (select media_id from media_in_albums where album_id={album_id})')
         return self.cursor.fetchall()
 
     def add_collection(self, name):
