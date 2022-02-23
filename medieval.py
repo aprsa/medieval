@@ -71,22 +71,16 @@ class Album(gtk.Box):
     def __init__(self, *args, **kwargs):
         super().__init__(orientation=gtk.Orientation.HORIZONTAL)
 
-        name = kwargs.get('name', None)
+        self.name = kwargs.get('name', None)
         self.album_id = kwargs.get('album_id', None)
 
-        self.label = gtk.Label(hexpand=False)
+        self.label = gtk.EditableLabel(hexpand=False)
+        self.label.connect('notify', self.on_album_edited)
         self.append(self.label)
-        self.entry = gtk.Entry()
-        self.append(self.entry)
-        self.entry.connect('activate', self.on_entry_changed)
 
-        if name is None:
-            self.label.set_visible(False)
-            self.entry.set_visible(True)
-        else:
-            self.label.set_text(name)
-            self.label.set_visible(True)
-            self.entry.set_visible(False)
+        if self.name is not None:
+            self.label.set_text(self.name)
+            self.label.set_editable(False)
 
         # Controller for dragging media to albums:
         dnd_m2a = gtk.DropTarget.new(gio.ListModel, gdk.DragAction.COPY)
@@ -105,12 +99,73 @@ class Album(gtk.Box):
         dnd_a2c.connect('drag-end', self.on_dnd_end)
         self.add_controller(dnd_a2c)
 
-    def on_entry_changed(self, entry):
-        name = entry.get_text()
-        self.album_id = medieval.engine.add_album(name=name)
-        self.label.set_text(name)
-        self.entry.set_visible(False)
-        self.label.set_visible(True)
+        # Right-click gesture:
+        gesture = gtk.GestureClick.new()
+        gesture.set_button(3)
+        gesture.connect('pressed', self.on_album_rightclicked)
+        self.add_controller(gesture)
+
+        # Define actions and pack them into a dedicated group:
+        action_group = gio.SimpleActionGroup.new()
+
+        album_rename = gio.SimpleAction.new('rename', None)
+        album_rename.connect('activate', self.on_album_rename)
+
+        album_delete = gio.SimpleAction.new('delete', None)
+        album_delete.connect('activate', self.on_album_delete)
+
+        action_group.add_action(album_rename)
+        action_group.add_action(album_delete)
+
+        self.insert_action_group('album', action_group)
+
+    def __repr__(self):
+        return f'<Album {self.name}, id={self.album_id}>'
+
+    def on_album_edited(self, label, data):
+        if data.name != 'editing':
+            # we don't care about any notification other than 'editing'.
+            return
+        
+        if label.get_property('editing') is True:
+            # editing still in progress, nothing to be done yet.
+            return
+        
+        logging.info(f'on_album_edited(): self={self}, label={label}, new_label={label.get_property("text")}')
+        label.set_editable(False)
+
+        if self.name is None:
+            # Album is being added for the first time.
+            self.name = label.get_property('text')
+            self.album_id = medieval.engine.add_album(name=self.name)
+        else:
+            # Album is being renamed.
+            self.name = label.get_property('text')
+            medieval.engine.update_album(album_id=self.album_id, name=self.name)
+
+    def on_album_rightclicked(self, click, n_press, x, y):
+        print(f'on_album_rightclicked(): self={self}, click={click}, n_press={n_press}, x={x}, y={y}')
+
+        context_menu = gio.Menu.new()
+        rename = gio.MenuItem.new(label='Rename', detailed_action='album.rename')
+        delete = gio.MenuItem.new(label='Delete', detailed_action='album.delete')
+
+        context_menu.append_item(rename)
+        context_menu.append_item(delete)
+
+        menu = gtk.PopoverMenu.new_from_model(context_menu)
+        menu.set_parent(self)
+        menu.popup()
+
+    def on_album_rename(self, action, data):
+        logging.info(f'on_album_rename(). self={self}, action={action}, data={data}')
+        self.label.set_editable(True)
+        self.label.start_editing()
+
+    def on_album_delete(self, action, data):
+        logging.info(f'on_album_delete(). self={self}, action={action}, data={data}')
+        medieval.engine.delete_album(album_id=self.album_id)
+        medieval.main_window.albums.remove(self.get_parent())
 
     def on_dnd_prepare(self, drag_source, x, y):
         album = gio.ListStore()
@@ -156,6 +211,62 @@ class Album(gtk.Box):
 
     def on_dnd_leave(self, user_data):
         logging.info(f'in on_dnd_leave(); user_data={user_data}')
+
+class Tag(gtk.Box):
+    def __init__(self, *args, **kwargs):
+        super().__init__(orientation=gtk.Orientation.HORIZONTAL)
+
+        name = kwargs.get('name', None)
+        self.tag_id = kwargs.get('tag_id', None)
+
+        self.label = gtk.Label(hexpand=False)
+        self.append(self.label)
+        self.entry = gtk.Entry()
+        self.append(self.entry)
+        self.entry.connect('activate', self.on_entry_changed)
+
+        if name is None:
+            self.label.set_visible(False)
+            self.entry.set_visible(True)
+        else:
+            self.label.set_text(name)
+            self.label.set_visible(True)
+            self.entry.set_visible(False)
+
+        # dnd_a2c = gtk.DropTarget.new(gio.ListModel, gdk.DragAction.COPY)
+        # dnd_a2c.connect('drop', self.on_dnd_drop)
+        # dnd_a2c.connect('accept', self.on_dnd_accept)
+        # dnd_a2c.connect('enter', self.on_dnd_enter)
+        # dnd_a2c.connect('motion', self.on_dnd_motion)
+        # dnd_a2c.connect('leave', self.on_dnd_leave)
+        # self.add_controller(dnd_a2c)
+
+    def on_entry_changed(self, entry):
+        name = entry.get_text()
+        self.tag_id = medieval.engine.add_tag(name=name)
+        self.label.set_text(name)
+        self.entry.set_visible(False)
+        self.label.set_visible(True)
+
+    # def on_dnd_drop(self, drop_target, value, x, y):
+    #     logging.info(f'in on_dnd_drop(); drop_target={drop_target}, value={value}, x={x}, y={y}')
+    #     for entry in list(value):
+    #         medieval.engine.add_album_to_collection(album_id=entry.album_id, collection_id=self.collection_id)
+
+    # def on_dnd_accept(self, drop_target, drop):
+    #     logging.info(f'in on_dnd_accept(); drop_target={drop_target}, drop={drop}')
+    #     return True
+
+    # def on_dnd_enter(self, drop_target, x, y):
+    #     logging.info(f'in on_dnd_enter(); drop_target={drop_target}, x={x}, y={y}')
+    #     return gdk.DragAction.COPY
+
+    # def on_dnd_motion(self, drop_target, x, y):
+    #     logging.info(f'in on_dnd_motion(); drop_target={drop_target}, x={x}, y={y}')
+    #     return gdk.DragAction.COPY
+
+    # def on_dnd_leave(self, user_data):
+    #     logging.info(f'in on_dnd_leave(); user_data={user_data}')
 
 class MediaFile(gtk.FlowBoxChild):
     def __init__(self, *args, **kwargs):
@@ -365,7 +476,6 @@ class DisplayPanel(gtk.Paned):
         # self.timeline_frame.set_visible(self.timeline_state)
         # self.gallery_frame.set_visible(self.gallery_state)
 
-
     def on_dnd_prepare(self, drag_source, x, y):
         media = gio.ListStore()
         media.splice(0, 0, self.timeline.get_selected_children())
@@ -511,11 +621,6 @@ class MedievalWindow(gtk.ApplicationWindow):
         self.albums.connect('row_activated', self.on_album_selected)
         abbox.append(self.albums)
 
-        gesture = gtk.GestureClick.new()
-        gesture.set_button(3)
-        gesture.connect('pressed', self.on_album_rightclicked)
-        self.albums.add_controller(gesture)
-
         new_album_button = gtk.Button.new_with_label('Add Album...')
         new_album_button.connect('clicked', self.on_new_album_clicked)
         abbox.append(new_album_button)
@@ -541,7 +646,7 @@ class MedievalWindow(gtk.ApplicationWindow):
         print(f'on_new_album_clicked(), button={button}')
         album = Album()
         self.albums.append(album)
-        album.entry.grab_focus()
+        album.label.start_editing()
 
     def on_album_selected(self, listbox, row):
         logging.info(f'on_album_selected(), listbox={listbox}, row={row}, album_id={row.get_child().album_id}')
@@ -559,9 +664,6 @@ class MedievalWindow(gtk.ApplicationWindow):
 
         self.display.timeline_frame.set_visible(False)
         self.display.gallery_frame.set_visible(True)
-
-    def on_album_rightclicked(self, click, n_press, x, y):
-        print(f'on_album_clicked(): self={self}, click={click}, n_press={n_press}, x={x}, y={y}')
 
     def on_menu(self, simple_action, parameter):
         logging.info(f'simple_action: {simple_action}, parameter: {parameter}')

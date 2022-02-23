@@ -58,8 +58,8 @@ class MedievalDB:
             self.cursor.execute('drop table if exists albums')
         
         self.cursor.execute('create table media (id int unsigned not null auto_increment primary key, filename varchar(256) not null, thumbnail varchar(32) not null, timestamp datetime, width smallint unsigned, height smallint unsigned, orientation tinyint, make varchar(32), model varchar(32))')
-        self.cursor.execute('create table collections (id int unsigned not null auto_increment, name varchar(16) not null, primary key(id))')
-        self.cursor.execute('create table albums (id int unsigned not null auto_increment, name varchar(100) not null, primary key(id))')
+        self.cursor.execute('create table collections (id int unsigned not null auto_increment, name varchar(16) not null, password char(64) default NULL, primary key(id))')
+        self.cursor.execute('create table albums (id int unsigned not null auto_increment, name varchar(100) not null, password char(64) default NULL, primary key(id))')
         self.cursor.execute('create table media_in_albums (album_id int unsigned not null, media_id int unsigned not null, foreign key (album_id) references albums(id), foreign key (media_id) references media(id), unique (album_id, media_id))')
         self.cursor.execute('create table albums_in_collections (collection_id int unsigned not null, album_id int unsigned not null, foreign key (collection_id) references collections(id), foreign key (album_id) references albums(id), unique (collection_id, album_id))')
 
@@ -110,6 +110,29 @@ class MedievalDB:
         self.cursor.execute(f'insert into media (filename,thumbnail,timestamp,width,height,orientation,make,model) values ("{os.path.abspath(filename)}","{thumbnail}","{timestamp}",{width},{height},{orientation},"{make}","{model}")')
         return self.cursor.lastrowid
 
+    def add_album(self, name, password=None):
+        if password is not None:
+            self.cursor.execute(f'insert into albums (name,password) values ("{name}", SHA2("{password}",256))')
+        else:
+            self.cursor.execute(f'insert into albums (name) values ("{name}")')
+        return self.cursor.lastrowid
+
+    def update_album(self, album_id, **kwargs):
+        changes = ','.join([f'{k}="{kwargs[k]}"' if kwargs[k] is not None else f'{k}=NULL' for k in kwargs])
+        # password needs a specialized treatment:
+        
+        if 'password' in kwargs and kwargs['password'] is not None:
+            changes = changes.replace(f'"{kwargs["password"]}"', f'SHA2("{kwargs["password"]}",256)')
+
+        self.cursor.execute(f'update albums set {changes} where id={album_id}')
+
+    def add_collection(self, name, password=None):
+        if password is not None:
+            self.cursor.execute(f'insert into collections (name,password) values ("{name}", SHA2("{password}",256))')
+        else:
+            self.cursor.execute(f'insert into collections (name) values ("{name}")')
+        return self.cursor.lastrowid
+
     def add_media_to_album(self, media_id, album_id):
         self.cursor.execute(f'insert into media_in_albums (album_id,media_id) values ({album_id},{media_id})')
 
@@ -123,13 +146,8 @@ class MedievalDB:
             self.cursor.execute(f'select * from media where id in (select media_id from media_in_albums where album_id={album_id})')
         return self.cursor.fetchall()
 
-    def add_collection(self, name):
-        self.cursor.execute(f'insert into collections (name) values ("{name}")')
-        return self.cursor.lastrowid
-
-    def add_album(self, name):
-        self.cursor.execute(f'insert into albums (name) values ("{name}")')
-        return self.cursor.lastrowid
+    def delete_album(self, album_id):
+        self.cursor.execute(f'delete from albums where id={album_id}')
 
     def query_albums(self):
         self.cursor.execute(f'select id,name from albums order by name asc')
