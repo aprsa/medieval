@@ -1,14 +1,15 @@
 import os
 import logging
 
-import gi
-gi.require_version('Gtk', '4.0')
-from gi.repository import Gtk as gtk, Gdk as gdk, Gio as gio, GObject as gobject, GLib as glib
-
-from PIL import Image, ImageFilter
-
 import config
 import engine
+
+import gi
+gi.require_version('Gtk', '4.0')
+from gi.repository import Gtk as gtk, Gdk as gdk, Gio as gio, GObject as gobject, GLib as glib, GdkPixbuf
+
+from PIL import Image, ImageFilter, ImageOps
+
 
 
 class Collection(gtk.Box):
@@ -69,18 +70,33 @@ class Collection(gtk.Box):
 
 class Album(gtk.Box):
     def __init__(self, *args, **kwargs):
-        super().__init__(orientation=gtk.Orientation.HORIZONTAL)
+        super().__init__(orientation=gtk.Orientation.HORIZONTAL, spacing=0)
 
         self.name = kwargs.get('name', None)
         self.album_id = kwargs.get('album_id', None)
+        self.locked = kwargs.get('locked', False)
+        self.provided_password = None
 
-        self.label = gtk.EditableLabel(hexpand=False)
+        self.label = gtk.EditableLabel(hexpand=True)
         self.label.connect('notify', self.on_album_edited)
         self.append(self.label)
+
+        self.locked_icon = gtk.Image.new_from_file('locked.png')
+        self.locked_icon.set_hexpand(False)
+        self.locked_icon.set_visible(False)
+        self.append(self.locked_icon)
+
+        self.unlocked_icon = gtk.Image.new_from_file('unlocked.png')
+        self.unlocked_icon.set_hexpand(False)
+        self.unlocked_icon.set_visible(False)
+        self.append(self.unlocked_icon)
 
         if self.name is not None:
             self.label.set_text(self.name)
             self.label.set_editable(False)
+
+        if self.locked:
+            self.locked_icon.set_visible(True)
 
         # Controller for dragging media to albums:
         dnd_m2a = gtk.DropTarget.new(gio.ListModel, gdk.DragAction.COPY)
@@ -101,12 +117,18 @@ class Album(gtk.Box):
 
         # Right-click gesture:
         gesture = gtk.GestureClick.new()
-        gesture.set_button(3)
-        gesture.connect('pressed', self.on_album_rightclicked)
-        self.add_controller(gesture)
+        gesture.set_button(0)
+        gesture.connect('pressed', self.on_album_clicked)
+        self.label.add_controller(gesture)
 
         # Define actions and pack them into a dedicated group:
         action_group = gio.SimpleActionGroup.new()
+
+        album_lock = gio.SimpleAction.new('lock', None)
+        album_lock.connect('activate', self.on_album_lock)
+
+        album_remove_lock = gio.SimpleAction.new('remove_lock', None)
+        album_remove_lock.connect('activate', self.on_album_remove_lock)
 
         album_rename = gio.SimpleAction.new('rename', None)
         album_rename.connect('activate', self.on_album_rename)
@@ -114,6 +136,8 @@ class Album(gtk.Box):
         album_delete = gio.SimpleAction.new('delete', None)
         album_delete.connect('activate', self.on_album_delete)
 
+        action_group.add_action(album_lock)
+        action_group.add_action(album_remove_lock)
         action_group.add_action(album_rename)
         action_group.add_action(album_delete)
 
@@ -143,19 +167,76 @@ class Album(gtk.Box):
             self.name = label.get_property('text')
             medieval.engine.update_album(album_id=self.album_id, name=self.name)
 
-    def on_album_rightclicked(self, click, n_press, x, y):
-        print(f'on_album_rightclicked(): self={self}, click={click}, n_press={n_press}, x={x}, y={y}')
+    def on_album_clicked(self, click, n_press, x, y):
+        mouse_button = click.get_current_button()
+        print(f'on_album_clicked(): self={self}, click={click}, button={mouse_button}, n_press={n_press}, x={x}, y={y}')
+        
+        if mouse_button == 1:  # left click
+            # check if album is locked:
+            if self.locked:
+                if self.provided_password is None:
+                    # the album is locked but no password has been provided:
+                    PasswordPrompt(mode='unlock', album=self)
+                    return
+                elif not medieval.engine.validate_album_password(album_id=self.album_id, password=self.provided_password):
+                    # the album is locked and incorrect password has been provided:
+                    PasswordPrompt(mode='unlock', album=self)
+                    return
+                else:
+                    # remove old media:
+                    medieval.main_window.display.gallery.select_all()
+                    for child in medieval.main_window.display.gallery.get_selected_children():
+                        medieval.main_window.display.gallery.remove(child)
 
-        context_menu = gio.Menu.new()
-        rename = gio.MenuItem.new(label='Rename', detailed_action='album.rename')
-        delete = gio.MenuItem.new(label='Delete', detailed_action='album.delete')
+                    # populate gallery with new media:
+                    media = medieval.engine.query_media(album_id=self.album_id, password=self.provided_password)
+                    for entry in media:
+                        child = MediaFile(filename=entry['filename'], thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg', media_id=entry['id'], timestamp=entry['timestamp'])
+                        medieval.main_window.display.gallery.insert(child, -1)
+                        medieval.main_window.display.gallery.album_id = self.album_id
 
-        context_menu.append_item(rename)
-        context_menu.append_item(delete)
+                    medieval.main_window.display.timeline_frame.set_visible(False)
+                    medieval.main_window.display.gallery_frame.set_visible(True)
+            else:
+                # remove old media:
+                medieval.main_window.display.gallery.select_all()
+                for child in medieval.main_window.display.gallery.get_selected_children():
+                    medieval.main_window.display.gallery.remove(child)
 
-        menu = gtk.PopoverMenu.new_from_model(context_menu)
-        menu.set_parent(self)
-        menu.popup()
+                # populate gallery with new media:
+                media = medieval.engine.query_media(album_id=self.album_id, password=self.provided_password)
+                for entry in media:
+                    child = MediaFile(filename=entry['filename'], thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg', media_id=entry['id'], timestamp=entry['timestamp'])
+                    medieval.main_window.display.gallery.insert(child, -1)
+                    medieval.main_window.display.gallery.album_id = self.album_id
+
+                medieval.main_window.display.timeline_frame.set_visible(False)
+                medieval.main_window.display.gallery_frame.set_visible(True)
+
+        elif mouse_button == 3:  # right click
+            context_menu = gio.Menu.new()
+
+            entries = [
+                ('Rename', 'album.rename'),
+                ('Delete', 'album.delete'),
+                ('Cast', 'album.cast'),
+            ]
+
+            if self.locked:
+                entries.append(('Unlock', 'album.lock'))
+                entries.append(('Remove lock', 'album.remove_lock'))
+            else:
+                entries.append(('Lock', 'album.lock'))
+
+            for entry in entries:
+                item = gio.MenuItem.new(label=entry[0], detailed_action=entry[1])
+                context_menu.append_item(item)
+
+            menu = gtk.PopoverMenu.new_from_model(context_menu)
+            menu.set_parent(self)
+            menu.popup()
+        else:
+            pass
 
     def on_album_rename(self, action, data):
         logging.info(f'on_album_rename(). self={self}, action={action}, data={data}')
@@ -167,6 +248,18 @@ class Album(gtk.Box):
         medieval.engine.delete_album(album_id=self.album_id)
         medieval.main_window.albums.remove(self.get_parent())
 
+    def on_album_remove_lock(self, action, data):
+        logging.info(f'on_album_remove_lock(). self={self}, action={action}, data={data}')
+        PasswordPrompt('remove_lock', self)
+
+    def on_album_lock(self, action, data):
+        logging.info(f'on_album_lock(). self={self}, action={action}, data={data}')
+
+        if self.locked:
+            PasswordPrompt(album=self, mode='unlock')
+        else:
+            PasswordPrompt(album=self, mode='lock')
+
     def on_dnd_prepare(self, drag_source, x, y):
         album = gio.ListStore()
         album.append(self)
@@ -174,14 +267,6 @@ class Album(gtk.Box):
 
         passed_data = gobject.Value(gio.ListModel, album)
         content = gdk.ContentProvider.new_for_value(passed_data)
-
-        # thumbnails = [Image.open(entry.filename) for entry in self.gallery.get_selected_children()]
-        # self.create_drag_icon(thumbnails)
-        # drag_image = gtk.Image.new_from_file(config.THUMBNAIL_DIR+'/drag_icon.png')
-
-        # paintable = media[0].image.get_paintable()  # TODO: make this nicer for multiple selections
-        # drag_image = gtk.Image.new_from_paintable(paintable)
-        # drag_source.set_icon(drag_image.get_paintable(), 128, 128)  # TODO: consider a better hot_x, hot_y default
         
         return content
 
@@ -274,6 +359,7 @@ class MediaFile(gtk.FlowBoxChild):
 
         self.filename = kwargs.get('filename', None)
         self.thumbnail = kwargs.get('thumbnail', None)
+        self.mimetype = kwargs.get('mimetype', None)
         self.media_id = kwargs.get('media_id', None)
         self.timestamp = kwargs.get('timestamp', None)
 
@@ -290,11 +376,95 @@ class MediaFile(gtk.FlowBoxChild):
         label = gtk.Label.new(self.filename[self.filename.rfind('/')+1:])
         vbox.append(label)
 
+        # Right-click gesture on display:
+        gesture = gtk.GestureClick.new()
+        gesture.set_button(3)
+        gesture.connect('pressed', self.on_media_rightclicked)
+        self.add_controller(gesture)
+
+        # Define actions and pack them into a dedicated group:
+        action_group = gio.SimpleActionGroup.new()
+
+        actions = {
+            'exif': self.on_media_exif,
+            'rotate': self.on_media_rotate,
+            'remove': self.on_media_remove,
+            'delete': self.on_media_delete,
+            'cast': self.on_media_cast,
+        }
+
+        for action in actions:
+            entry = gio.SimpleAction.new(action, None)
+            entry.connect('activate', actions[action])
+            action_group.add_action(entry)
+
+        self.insert_action_group('media', action_group)
+
     def __repr__(self):
         return f'<MediaFile {self.filename}>'
 
     def basename(self):
         return os.path.basename(self.filename)
+
+    def on_media_exif(self, action, data):
+        logging.info(f'on_media_exif(): self={self}, action={action}, data={data}')
+
+        # Delete any previous contents from the EXIF list:
+        child = medieval.main_window.exif_list.get_first_child()
+        while child:
+            medieval.main_window.exif_list.remove(child)
+            child = medieval.main_window.exif_list.get_first_child()
+
+        with Image.open(self.filename) as im:
+            entries = engine.import_exif(im)
+            for entry in entries:
+                label = gtk.Label.new(f'{entry}={entries[entry]}')
+                label.set_xalign(0.0)
+                medieval.main_window.exif_list.append(label)
+        medieval.main_window.exif_frame.set_visible(True)
+
+    def on_media_rotate(self, action, data):
+        logging.info(f'on_media_rotate(): self={self}, action={action}, data={data}')
+
+    def on_media_remove(self, action, data):
+        logging.info(f'on_media_remove(): self={self}, action={action}, data={data}')
+        display = self.get_parent()
+        display.remove(self)
+        if display == medieval.main_window.display.timeline:
+            medieval.engine.remove_media(media_id=self.media_id)
+        elif display == medieval.main_window.display.gallery:
+            medieval.engine.remove_media_from_album(media_id=self.media_id, album_id=medieval.main_window.display.gallery.album_id)
+        else:
+            raise ValueError('how did we get here?')
+
+    def on_media_delete(self, action, data):
+        logging.info(f'on_media_delete(): self={self}, action={action}, data={data}')
+        print(self.get_parent(), self.get_parent() == medieval.main_window.display.timeline, self.get_parent() == medieval.main_window.display.gallery)
+
+    def on_media_cast(self, action, data):
+        logging.info(f'on_media_cast(). self={self}, action={action}, data={data}')
+        medieval.caster.play_media(f'http://192.168.1.13:8000/{self.filename[20:]}', 'image/jpg')
+
+    def on_media_rightclicked(self, click, n_press, x, y):
+        print(f'on_media_rightclicked(): self={self}, click={click}, n_press={n_press}, x={x}, y={y}')
+
+        context_menu = gio.Menu.new()
+        menu_items = {
+            'Meta-data': 'media.exif',
+            'Rotate': 'media.rotate',
+            'Remove': 'media.remove',
+            'Delete': 'media.delete',
+            'Cast': 'media.cast',
+        }
+
+        for item in menu_items:
+            entry = gio.MenuItem.new(label=item, detailed_action=menu_items[item])
+            context_menu.append_item(entry)
+
+        menu = gtk.PopoverMenu.new_from_model(context_menu)
+        menu.set_parent(self.image)
+        menu.set_offset(x_offset=128, y_offset=-64)
+        menu.popup()
 
 class DisplayPanel(gtk.Paned):
     def __init__(self, *args, **kwargs):
@@ -412,8 +582,6 @@ class DisplayPanel(gtk.Paned):
         # The final width and height need to accommodate for shadow size as well.
         composite = Image.new(mode='RGBA', size=(width+16*min(len(media), 2), height+16*min(len(media), 2)), color=(0, 0, 0, 1))
 
-        # shadows = [self.drop_shadow(media[0].getbbox()[2:], 10, 8, (0, 0)), self.drop_shadow((width, height), 10, 8, (0, 0)), self.drop_shadow(media[-1].getbbox()[2:], 10, 8, (0, 0))]
-
         if len(media) == 1:
             shadow = self.drop_shadow(media[0].getbbox()[2:], 10, 8, (0, 0))
             composite.paste(shadow, (0, 0, shadow.width, shadow.height))
@@ -445,24 +613,41 @@ class DisplayPanel(gtk.Paned):
             composite.paste('grey', (14, 14, 14+media[1].width, 14+media[1].height))
             composite.alpha_composite(shadow2, (0, 0))
             composite.paste(media[0], (8, 8, 8+media[0].width, 8+media[0].height))
-        # for i in range(thno):
-            # thumbnails[i].putalpha(alpha[i])
-            # im.alpha_composite(thumbnails[i], (16*i, 16*i))
-            # im.paste(thumbnails[i], box=())
 
-        # buffer = glib.Bytes.new(composite.tobytes())
-        # pixbuf = gdk.Pixbuf.new_from_data(buffer.get_data(), gdk.Pixbuf.Colorspace)
-        composite.save(config.THUMBNAIL_DIR+'/drag_icon.png')
-        return composite
+        buffer = glib.Bytes.new(composite.tobytes())
+        gdata = GdkPixbuf.Pixbuf.new_from_bytes(buffer, GdkPixbuf.Colorspace.RGB, True, 8, composite.width, composite.height, len(composite.getbands())*composite.width)
+        return gtk.Image.new_from_pixbuf(gdata)
 
     def on_media_selected(self, gallery, media_file):
+        """
+        Displays the selected media from the gallery in the media panel. The
+        function checks mimetype of the media and adjusts the widget that
+        displays the media accordingly.
+
+        * `gallery`: parent gallery that contains the selected `MediaFile`
+          instance
+        * `media_file`: selected `MediaFile` instance
+        """
         logging.info(f'on_media_selected(); gallery={gallery}, media_file={media_file}')
-        picture = gtk.Picture.new_for_filename(media_file.filename)
-        picture.set_can_shrink(True)
-        self.picture_frame.get_child().set_label(media_file.basename())
-        self.picture_area.set_child(picture)
-        self.picture_area.grab_focus()
-        self.picture_frame.set_visible(True)
+
+        if 'image' in media_file.mimetype:
+            pimage = Image.open(media_file.filename)
+            pimage = ImageOps.exif_transpose(pimage)
+            pdata = glib.Bytes.new(pimage.tobytes())
+            gdata = GdkPixbuf.Pixbuf.new_from_bytes(pdata, GdkPixbuf.Colorspace.RGB, False, 8, pimage.width, pimage.height, len(pimage.getbands())*pimage.width)
+            picture = gtk.Picture.new_for_pixbuf(gdata)
+
+            picture.set_can_shrink(True)
+            self.picture_frame.get_child().set_label(media_file.basename())
+            self.picture_area.set_child(picture)
+            self.picture_area.grab_focus()
+            self.picture_frame.set_visible(True)
+
+        elif 'video' in media_file.mimetype:
+            logging.info('video format detected, it is currently being implemented.')
+
+        else:
+            logging.warning(f'mimetype {media_file.mimetype} not recognized.')
 
     def on_album_closed(self, button):
         logging.info(f'on_album_closed(): self={self}, button={button}')
@@ -488,11 +673,7 @@ class DisplayPanel(gtk.Paned):
         content = gdk.ContentProvider.new_for_value(passed_data)
 
         thumbnails = [Image.open(entry.thumbnail) for entry in self.timeline.get_selected_children()]
-        self.create_drag_icon(thumbnails)
-        drag_image = gtk.Image.new_from_file(config.THUMBNAIL_DIR+'/drag_icon.png')
-
-        # paintable = media[0].image.get_paintable()  # TODO: make this nicer for multiple selections
-        # drag_image = gtk.Image.new_from_paintable(paintable)
+        drag_image = self.create_drag_icon(thumbnails)
         drag_source.set_icon(drag_image.get_paintable(), 128, 128)  # TODO: consider a better hot_x, hot_y default
         
         return content
@@ -527,6 +708,127 @@ class DisplayPanel(gtk.Paned):
                 self.gallery_frame.set_visible(self.gallery_state)
                 self.picture_state = False
 
+class PasswordPrompt(gtk.Dialog):
+    def __init__(self, mode, album):
+        super().__init__(transient_for=medieval.main_window, use_header_bar=False)
+
+        self.mode = mode
+        self.album = album
+
+        if mode == 'lock':
+            title = 'Lock album'
+        elif mode == 'unlock':
+            title = 'Unlock album'
+        elif mode == 'remove_lock':
+            title = 'Remove lock'
+        else:
+            raise ValueError(f'mode={mode} not recognized.')
+
+        self.set_title(title=title)
+        self.use_header_bar = True
+        self.set_modal(modal=True)
+        self.connect('response', self.dialog_response)
+
+        self.add_buttons(
+            '_Cancel', gtk.ResponseType.CANCEL,
+            '_OK', gtk.ResponseType.OK,
+        )
+
+        # btn_ok = self.get_widget_for_response(response_id=gtk.ResponseType.OK)
+        # btn_ok.get_style_context().add_class(class_name='suggested-action')
+        # btn_cancel = self.get_widget_for_response(response_id=gtk.ResponseType.CANCEL)
+        # btn_cancel.get_style_context().add_class(class_name='destructive-action')
+
+        content_area = self.get_content_area()
+        content_area.set_orientation(orientation=gtk.Orientation.VERTICAL)
+        content_area.set_spacing(spacing=12)
+        content_area.set_margin_top(margin=12)
+        content_area.set_margin_end(margin=12)
+        content_area.set_margin_bottom(margin=12)
+        content_area.set_margin_start(margin=12)
+
+        label = gtk.Label.new(f'Password for album {self.album.name}:')
+        content_area.append(label)
+
+        self.entry = gtk.PasswordEntry.new()
+        self.entry.set_property('placeholder-text', 'Enter password')
+        content_area.append(child=self.entry)
+
+        if mode == 'lock':
+            self.confirm = gtk.PasswordEntry.new()
+            self.confirm.set_property('placeholder-text', 'Re-enter password')
+            content_area.append(child=self.confirm)
+
+        self.show()
+
+    def dialog_response(self, widget, response):
+        if response == gtk.ResponseType.OK:
+            if self.mode == 'unlock':
+                password = self.entry.get_text()
+                if medieval.engine.validate_album_password(self.album.album_id, password):
+                    self.album.provided_password = password
+                    widget.close()
+
+                    self.album.locked_icon.set_visible(False)
+                    self.album.unlocked_icon.set_visible(True)
+
+                    # remove old media:
+                    medieval.main_window.display.gallery.select_all()
+                    for child in medieval.main_window.display.gallery.get_selected_children():
+                        medieval.main_window.display.gallery.remove(child)
+
+                    # populate gallery with new media:
+                    media = medieval.engine.query_media(album_id=self.album.album_id, password=password)
+                    for entry in media:
+                        child = MediaFile(filename=entry['filename'], thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg', mimetype=entry['mimetype'], media_id=entry['id'], timestamp=entry['timestamp'])
+                        medieval.main_window.display.gallery.insert(child, -1)
+
+                    medieval.main_window.display.timeline_frame.set_visible(False)
+                    medieval.main_window.display.gallery_frame.set_visible(True)
+                else:
+                    content_area = self.get_content_area()
+                    content_area.append(gtk.Label.new('Invalid password, please try again.'))
+                    self.entry.set_text('')
+                    self.entry.set_property('placeholder-text', 'Enter password')
+                    self.entry.grab_focus()
+            elif self.mode == 'lock':
+                password_1 = self.entry.get_text()
+                password_2 = self.confirm.get_text()
+                if password_1 != password_2:
+                    content_area = self.get_content_area()
+                    content_area.append(gtk.Label.new('Passwords do not match.'))
+                    self.entry.set_text('')
+                    self.confirm.set_text('')
+                    self.entry.set_property('placeholder-text', 'Enter password')
+                    self.confirm.set_property('placeholder-text', 'Re-enter password')
+                    self.entry.grab_focus()
+                else:
+                    medieval.engine.set_album_password(album_id=self.album.album_id, password=password_1)
+                    self.album.lockad = True
+                    self.album.locked_icon.set_visible(True)
+                    widget.close()
+            elif self.mode == 'remove_lock':
+                password = self.entry.get_text()
+                if medieval.engine.validate_album_password(self.album.album_id, password):
+                    self.album.locked = False
+                    self.album.provided_password = None
+                    self.album.locked_icon.set_visible(False)
+                    self.album.unlocked_icon.set_visible(False)
+                    medieval.engine.unset_album_password(self.album.album_id)
+                    widget.close()
+                else:
+                    content_area = self.get_content_area()
+                    content_area.append(gtk.Label.new('Invalid password, please try again.'))
+                    self.entry.set_text('')
+                    self.entry.set_property('placeholder-text', 'Enter password')
+                    self.entry.grab_focus()
+            else:
+                raise ValueError(f'mode={self.mode} is not recognized.')
+
+        elif response == gtk.ResponseType.CANCEL:
+            self.album.provided_password = None
+            widget.close()
+
 class Importer(gtk.FileChooserDialog):
     def __init__(self, parent, select_multiple):
         super().__init__(transient_for=parent, use_header_bar=True)
@@ -551,7 +853,7 @@ class Importer(gtk.FileChooserDialog):
         if response == gtk.ResponseType.OK:
             media_list = medieval.engine.import_media_from_directory(self.get_file().get_path())
             for entry in media_list:
-                child = MediaFile(filename=entry['filename'], thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg', media_id=entry['id'], timestamp=entry['timestamp'])
+                child = MediaFile(filename=entry['filename'], thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg', mimetype=entry['mimetype'], media_id=entry['id'], timestamp=entry['timestamp'])
                 self.parent.display.timeline.insert(child, -1)
 
         elif response == gtk.ResponseType.CANCEL:
@@ -618,15 +920,35 @@ class MedievalWindow(gtk.ApplicationWindow):
         albums_frame.set_child(abbox)
 
         self.albums = gtk.ListBox(activate_on_single_click=True, selection_mode=gtk.SelectionMode.BROWSE, show_separators=True, vexpand=True)
-        self.albums.connect('row_activated', self.on_album_selected)
         abbox.append(self.albums)
 
         new_album_button = gtk.Button.new_with_label('Add Album...')
         new_album_button.connect('clicked', self.on_new_album_clicked)
         abbox.append(new_album_button)
 
-        self.display = DisplayPanel(name='Gallery')
-        hpanels.set_end_child(self.display)
+        main_panel = gtk.Paned(orientation=gtk.Orientation.HORIZONTAL, position=1200)
+        hpanels.set_end_child(main_panel)
+
+        self.display = DisplayPanel(name='Gallery', hexpand=True)
+        main_panel.set_start_child(self.display)
+
+        exif_frame = gtk.Frame(label='Meta-data')
+        exif_sw = gtk.ScrolledWindow(hscrollbar_policy=gtk.PolicyType.AUTOMATIC, vscrollbar_policy=gtk.PolicyType.AUTOMATIC, hexpand=True, vexpand=True)
+        exif_frame.set_child(exif_sw)
+        self.exif_list = gtk.ListBox(selection_mode=gtk.SelectionMode.NONE, show_separators=True, vexpand=True)
+        exif_sw.set_child(self.exif_list)
+
+        self.exif_frame = gtk.Overlay()
+        self.exif_frame.set_child(exif_frame)
+
+        close_button = gtk.Button.new_from_icon_name('window-close')
+        close_button.set_halign(gtk.Align.END)
+        close_button.set_valign(gtk.Align.START)
+        close_button.connect('clicked', self.on_exif_closed)
+        self.exif_frame.add_overlay(close_button)
+        self.exif_frame.set_visible(False)
+
+        main_panel.set_end_child(self.exif_frame)
 
         button = gtk.Button(label='Quit')
         button.connect('clicked', lambda _: app.quit())
@@ -648,22 +970,16 @@ class MedievalWindow(gtk.ApplicationWindow):
         self.albums.append(album)
         album.label.start_editing()
 
-    def on_album_selected(self, listbox, row):
-        logging.info(f'on_album_selected(), listbox={listbox}, row={row}, album_id={row.get_child().album_id}')
+    def on_exif_closed(self, button):
+        logging.info(f'on_exif_closed(): self={self}, button={button}')
 
-        # remove old media:
-        self.display.gallery.select_all()
-        for child in self.display.gallery.get_selected_children():
-            self.display.gallery.remove(child)
+        # Delete any previous contents from the EXIF list:
+        child = self.exif_list.get_first_child()
+        while child:
+            self.exif_list.remove(child)
+            child = self.exif_list.get_first_child()
 
-        # populate gallery with new media:
-        media = medieval.engine.query_media(album_id=row.get_child().album_id)
-        for entry in media:
-            child = MediaFile(filename=entry['filename'], thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg', media_id=entry['id'], timestamp=entry['timestamp'])
-            self.display.gallery.insert(child, -1)
-
-        self.display.timeline_frame.set_visible(False)
-        self.display.gallery_frame.set_visible(True)
+        self.exif_frame.set_visible(False)
 
     def on_menu(self, simple_action, parameter):
         logging.info(f'simple_action: {simple_action}, parameter: {parameter}')
@@ -683,6 +999,7 @@ class MedievalApp(gtk.Application):
         gtk.Application.do_startup(self)
 
         self.engine = engine.MedievalDB()
+        # self.caster = engine.init_chromecast()
         
         action = gio.SimpleAction.new('quit', None)
         action.connect('activate', self.on_quit)
@@ -697,7 +1014,7 @@ class MedievalApp(gtk.Application):
             # Populate the timeline with thumbnails:
             media_list = self.engine.query_media()
             for entry in media_list:
-                child = MediaFile(filename=entry['filename'], thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg', media_id=entry['id'], timestamp=entry['timestamp'])
+                child = MediaFile(filename=entry['filename'], thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg', mimetype=entry['mimetype'], media_id=entry['id'], timestamp=entry['timestamp'])
                 self.main_window.display.timeline.insert(child, -1)
 
             # Populate collections:
@@ -709,7 +1026,7 @@ class MedievalApp(gtk.Application):
             # Populate albums:
             album_list = self.engine.query_albums()
             for entry in album_list:
-                album = Album(name=entry['name'], album_id=entry['id'])
+                album = Album(name=entry['name'], album_id=entry['id'], locked=entry['locked'])
                 self.main_window.albums.append(album)
 
         self.main_window.present()
