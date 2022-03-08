@@ -67,7 +67,7 @@ class MedievalDB:
             self.cursor.execute('drop table if exists collections')
             self.cursor.execute('drop table if exists albums')
         
-        self.cursor.execute('create table media (id int unsigned not null auto_increment primary key, filename varchar(256) not null, thumbnail varchar(32) not null, mimetype varchar(32), timestamp datetime, width smallint unsigned, height smallint unsigned, orientation tinyint, make varchar(32), model varchar(32))')
+        self.cursor.execute('create table media (id int unsigned not null auto_increment primary key, filename varchar(256) not null, thumbnail varchar(32) not null, mimetype varchar(32), timestamp datetime, width smallint unsigned, height smallint unsigned, orientation tinyint, make varchar(32), model varchar(32), description varchar(1024))')
         self.cursor.execute('create table collections (id int unsigned not null auto_increment, name varchar(16) not null, password char(64) default NULL, primary key(id))')
         self.cursor.execute('create table albums (id int unsigned not null auto_increment, name varchar(100) not null, password char(64) default NULL, primary key(id))')
         self.cursor.execute('create table media_in_albums (album_id int unsigned not null, media_id int unsigned not null, foreign key (album_id) references albums(id), foreign key (media_id) references media(id), unique (album_id, media_id))')
@@ -159,7 +159,18 @@ class MedievalDB:
 
                 thumbnail = self.generate_thumbnail(filename, im)
 
-                media_id = self.add_media(filename=filename, thumbnail=thumbnail, mimetype=mimetype, timestamp=timestamp, width=width, height=height, orientation=orientation, make=make, model=model)
+                media_id = self.add_media(
+                    filename=filename,
+                    thumbnail=thumbnail,
+                    mimetype=mimetype,
+                    timestamp=timestamp,
+                    width=width,
+                    height=height,
+                    orientation=orientation,
+                    make=make,
+                    model=model,
+                    description=None
+                )
                 media_ids.append(media_id)
             elif 'video' in mimetype:
                 try:
@@ -180,7 +191,18 @@ class MedievalDB:
 
                 thumbnail = self.generate_video_thumbnail(filename, width, height, duration)
 
-                media_id = self.add_media(filename=filename, thumbnail=thumbnail, mimetype=mimetype, timestamp=timestamp, width=width, height=height, orientation=-1, make='', model='')
+                media_id = self.add_media(
+                    filename=filename,
+                    thumbnail=thumbnail,
+                    mimetype=mimetype,
+                    timestamp=timestamp,
+                    width=width,
+                    height=height,
+                    orientation=-1,
+                    make='',
+                    model='',
+                    description=None
+                )
                 media_ids.append(media_id)
             else:
                 logging.warning(f'mimetype={mimetype} not recognized as a media format, skipping.')
@@ -193,11 +215,16 @@ class MedievalDB:
             self.cursor.execute(f'select * from media where id in {tuple(media_ids)} order by timestamp asc')
             return self.cursor.fetchall()
 
-    def add_media(self, filename, thumbnail, mimetype, timestamp='NULL', width=None, height=None, orientation=None, make=None, model=None):
+    def add_media(self, filename, thumbnail, mimetype, timestamp='NULL', width=None, height=None, orientation=None, make=None, model=None, description=None):
         if timestamp != 'NULL':
             timestamp = f'"{timestamp}"'
-        self.cursor.execute(f'insert into media (filename,thumbnail,mimetype,timestamp,width,height,orientation,make,model) values ("{os.path.abspath(filename)}","{thumbnail}","{mimetype}",{timestamp},{width},{height},{orientation},"{make}","{model}")')
+        self.cursor.execute(f'insert into media (filename,thumbnail,mimetype,timestamp,width,height,orientation,make,model,description) values ("{os.path.abspath(filename)}","{thumbnail}","{mimetype}",{timestamp},{width},{height},{orientation},"{make}","{model}","{description}")')
         return self.cursor.lastrowid
+
+    def update_media(self, media_id, **kwargs):
+        for k, v in kwargs.items():
+            print(f'k={k}, v={v}, media_id={media_id}')
+            self.cursor.execute(f'update media set {k}="{v}" where id={media_id}')
 
     def remove_media(self, media_id):
         self.cursor.execute(f'delete from media where id={media_id}')
@@ -279,6 +306,17 @@ def import_exif(image, taglist=ExifTags.TAGS):
         if type(val) == str:
             val = val.replace('\x00', '').strip()
         tags[tag] = val
+    return tags
+
+def import_video_metadata(filename):
+    tags = dict()
+    contents = ffmpeg.probe(filename)
+    for content in contents['format']:
+        if type(contents['format'][content]) is dict:
+            for tag in contents['format'][content]:
+                tags[tag] = contents['format'][content][tag]
+            continue
+        tags[content] = contents['format'][content]
     return tags
 
 def init_chromecast():

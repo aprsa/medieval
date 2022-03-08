@@ -191,7 +191,13 @@ class Album(gtk.Box):
                     # populate gallery with new media:
                     media = medieval.engine.query_media(album_id=self.album_id, password=self.provided_password)
                     for entry in media:
-                        child = MediaFile(filename=entry['filename'], thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg', media_id=entry['id'], timestamp=entry['timestamp'])
+                        child = MediaFile(
+                            filename=entry['filename'],
+                            thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg',
+                            media_id=entry['id'],
+                            timestamp=entry['timestamp'],
+                            description=entry['description']
+                        )
                         medieval.main_window.display.gallery.insert(child, -1)
                         medieval.main_window.display.gallery.album_id = self.album_id
 
@@ -206,7 +212,13 @@ class Album(gtk.Box):
                 # populate gallery with new media:
                 media = medieval.engine.query_media(album_id=self.album_id, password=self.provided_password)
                 for entry in media:
-                    child = MediaFile(filename=entry['filename'], thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg', media_id=entry['id'], timestamp=entry['timestamp'])
+                    child = MediaFile(
+                        filename=entry['filename'],
+                        thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg',
+                        media_id=entry['id'],
+                        timestamp=entry['timestamp'],
+                        description=entry['description']
+                    )
                     medieval.main_window.display.gallery.insert(child, -1)
                     medieval.main_window.display.gallery.album_id = self.album_id
 
@@ -297,62 +309,6 @@ class Album(gtk.Box):
     def on_dnd_leave(self, user_data):
         logging.info(f'in on_dnd_leave(); user_data={user_data}')
 
-class Tag(gtk.Box):
-    def __init__(self, *args, **kwargs):
-        super().__init__(orientation=gtk.Orientation.HORIZONTAL)
-
-        name = kwargs.get('name', None)
-        self.tag_id = kwargs.get('tag_id', None)
-
-        self.label = gtk.Label(hexpand=False)
-        self.append(self.label)
-        self.entry = gtk.Entry()
-        self.append(self.entry)
-        self.entry.connect('activate', self.on_entry_changed)
-
-        if name is None:
-            self.label.set_visible(False)
-            self.entry.set_visible(True)
-        else:
-            self.label.set_text(name)
-            self.label.set_visible(True)
-            self.entry.set_visible(False)
-
-        # dnd_a2c = gtk.DropTarget.new(gio.ListModel, gdk.DragAction.COPY)
-        # dnd_a2c.connect('drop', self.on_dnd_drop)
-        # dnd_a2c.connect('accept', self.on_dnd_accept)
-        # dnd_a2c.connect('enter', self.on_dnd_enter)
-        # dnd_a2c.connect('motion', self.on_dnd_motion)
-        # dnd_a2c.connect('leave', self.on_dnd_leave)
-        # self.add_controller(dnd_a2c)
-
-    def on_entry_changed(self, entry):
-        name = entry.get_text()
-        self.tag_id = medieval.engine.add_tag(name=name)
-        self.label.set_text(name)
-        self.entry.set_visible(False)
-        self.label.set_visible(True)
-
-    # def on_dnd_drop(self, drop_target, value, x, y):
-    #     logging.info(f'in on_dnd_drop(); drop_target={drop_target}, value={value}, x={x}, y={y}')
-    #     for entry in list(value):
-    #         medieval.engine.add_album_to_collection(album_id=entry.album_id, collection_id=self.collection_id)
-
-    # def on_dnd_accept(self, drop_target, drop):
-    #     logging.info(f'in on_dnd_accept(); drop_target={drop_target}, drop={drop}')
-    #     return True
-
-    # def on_dnd_enter(self, drop_target, x, y):
-    #     logging.info(f'in on_dnd_enter(); drop_target={drop_target}, x={x}, y={y}')
-    #     return gdk.DragAction.COPY
-
-    # def on_dnd_motion(self, drop_target, x, y):
-    #     logging.info(f'in on_dnd_motion(); drop_target={drop_target}, x={x}, y={y}')
-    #     return gdk.DragAction.COPY
-
-    # def on_dnd_leave(self, user_data):
-    #     logging.info(f'in on_dnd_leave(); user_data={user_data}')
-
 class MediaFile(gtk.FlowBoxChild):
     def __init__(self, *args, **kwargs):
         super().__init__()
@@ -362,6 +318,7 @@ class MediaFile(gtk.FlowBoxChild):
         self.mimetype = kwargs.get('mimetype', None)
         self.media_id = kwargs.get('media_id', None)
         self.timestamp = kwargs.get('timestamp', None)
+        self.description = kwargs.get('description', None)
 
         frame = gtk.Frame()
         self.set_child(frame)
@@ -373,8 +330,14 @@ class MediaFile(gtk.FlowBoxChild):
         self.image.set_pixel_size(256)
         vbox.append(self.image)
 
-        label = gtk.Label.new(self.filename[self.filename.rfind('/')+1:])
-        vbox.append(label)
+        self.label = gtk.EditableLabel()
+        if self.description:
+            self.label.set_text(self.description)
+        else:
+            self.label.set_text(self.basename())
+        self.label.set_editable(False)
+        self.label.connect('notify', self.media_description_changed)
+        vbox.append(self.label)
 
         # Right-click gesture on display:
         gesture = gtk.GestureClick.new()
@@ -386,7 +349,8 @@ class MediaFile(gtk.FlowBoxChild):
         action_group = gio.SimpleActionGroup.new()
 
         actions = {
-            'exif': self.on_media_exif,
+            'metadata': self.display_media_metadata,
+            'describe': self.add_media_description,
             'rotate': self.on_media_rotate,
             'remove': self.on_media_remove,
             'delete': self.on_media_delete,
@@ -406,22 +370,50 @@ class MediaFile(gtk.FlowBoxChild):
     def basename(self):
         return os.path.basename(self.filename)
 
-    def on_media_exif(self, action, data):
-        logging.info(f'on_media_exif(): self={self}, action={action}, data={data}')
+    def display_media_metadata(self, action, data):
+        logging.info(f'display_media_metadata(): self={self}, action={action}, data={data}')
 
-        # Delete any previous contents from the EXIF list:
-        child = medieval.main_window.exif_list.get_first_child()
+        # Delete any previous contents from the metadata list:
+        child = medieval.main_window.metadata_list.get_first_child()
         while child:
-            medieval.main_window.exif_list.remove(child)
-            child = medieval.main_window.exif_list.get_first_child()
+            medieval.main_window.metadata_list.remove(child)
+            child = medieval.main_window.metadata_list.get_first_child()
 
-        with Image.open(self.filename) as im:
-            entries = engine.import_exif(im)
-            for entry in entries:
-                label = gtk.Label.new(f'{entry}={entries[entry]}')
-                label.set_xalign(0.0)
-                medieval.main_window.exif_list.append(label)
-        medieval.main_window.exif_frame.set_visible(True)
+        if 'image' in self.mimetype:
+            with Image.open(self.filename) as im:
+                entries = engine.import_exif(im)
+
+        elif 'video' in self.mimetype:
+            entries = engine.import_video_metadata(self.filename)
+
+        else:
+            logging.info(f'mimetype {self.mimetype} not recognized.')
+
+        for entry in entries:
+            label = gtk.Label.new(f'{entry}={entries[entry]}')
+            label.set_xalign(0.0)
+            medieval.main_window.metadata_list.append(label)
+
+        medieval.main_window.metadata_frame.set_visible(True)
+
+    def add_media_description(self, action, data):
+        logging.info(f'add_media_description(): self={self}, action={action}, data={data}')
+        self.label.set_editable(True)
+        self.label.start_editing()
+
+    def media_description_changed(self, label, data):
+        if data.name != 'editing':
+            # we don't care about any notification other than 'editing'.
+            return
+        
+        if label.get_property('editing') is True:
+            # editing still in progress, nothing to be done yet.
+            return
+        
+        logging.info(f'media_description_changed(): self={self}, label={label}, new_label={label.get_property("text")}')
+        label.set_editable(False)
+
+        medieval.engine.update_media(media_id=self.media_id, description=label.get_property("text"))
 
     def on_media_rotate(self, action, data):
         logging.info(f'on_media_rotate(): self={self}, action={action}, data={data}')
@@ -450,7 +442,8 @@ class MediaFile(gtk.FlowBoxChild):
 
         context_menu = gio.Menu.new()
         menu_items = {
-            'Meta-data': 'media.exif',
+            'Meta-data': 'media.metadata',
+            'Describe': 'media.describe',
             'Rotate': 'media.rotate',
             'Remove': 'media.remove',
             'Delete': 'media.delete',
@@ -644,6 +637,11 @@ class DisplayPanel(gtk.Paned):
             self.picture_frame.set_visible(True)
 
         elif 'video' in media_file.mimetype:
+            video = gtk.Video.new_for_filename(media_file.filename)
+            self.picture_frame.get_child().set_label(media_file.basename())
+            self.picture_area.set_child(video)
+            self.picture_area.grab_focus()
+            self.picture_frame.set_visible(True)
             logging.info('video format detected, it is currently being implemented.')
 
         else:
@@ -780,7 +778,14 @@ class PasswordPrompt(gtk.Dialog):
                     # populate gallery with new media:
                     media = medieval.engine.query_media(album_id=self.album.album_id, password=password)
                     for entry in media:
-                        child = MediaFile(filename=entry['filename'], thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg', mimetype=entry['mimetype'], media_id=entry['id'], timestamp=entry['timestamp'])
+                        child = MediaFile(
+                            filename=entry['filename'],
+                            thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg',
+                            mimetype=entry['mimetype'],
+                            media_id=entry['id'],
+                            timestamp=entry['timestamp'],
+                            description=entry['description']
+                        )
                         medieval.main_window.display.gallery.insert(child, -1)
 
                     medieval.main_window.display.timeline_frame.set_visible(False)
@@ -853,7 +858,14 @@ class Importer(gtk.FileChooserDialog):
         if response == gtk.ResponseType.OK:
             media_list = medieval.engine.import_media_from_directory(self.get_file().get_path())
             for entry in media_list:
-                child = MediaFile(filename=entry['filename'], thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg', mimetype=entry['mimetype'], media_id=entry['id'], timestamp=entry['timestamp'])
+                child = MediaFile(
+                    filename=entry['filename'],
+                    thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg',
+                    mimetype=entry['mimetype'],
+                    media_id=entry['id'],
+                    timestamp=entry['timestamp'],
+                    description=entry['description']
+                )
                 self.parent.display.timeline.insert(child, -1)
 
         elif response == gtk.ResponseType.CANCEL:
@@ -932,23 +944,23 @@ class MedievalWindow(gtk.ApplicationWindow):
         self.display = DisplayPanel(name='Gallery', hexpand=True)
         main_panel.set_start_child(self.display)
 
-        exif_frame = gtk.Frame(label='Meta-data')
-        exif_sw = gtk.ScrolledWindow(hscrollbar_policy=gtk.PolicyType.AUTOMATIC, vscrollbar_policy=gtk.PolicyType.AUTOMATIC, hexpand=True, vexpand=True)
-        exif_frame.set_child(exif_sw)
-        self.exif_list = gtk.ListBox(selection_mode=gtk.SelectionMode.NONE, show_separators=True, vexpand=True)
-        exif_sw.set_child(self.exif_list)
+        metadata_frame = gtk.Frame(label='Meta-data')
+        metadata_sw = gtk.ScrolledWindow(hscrollbar_policy=gtk.PolicyType.AUTOMATIC, vscrollbar_policy=gtk.PolicyType.AUTOMATIC, hexpand=True, vexpand=True)
+        metadata_frame.set_child(metadata_sw)
+        self.metadata_list = gtk.ListBox(selection_mode=gtk.SelectionMode.NONE, show_separators=True, vexpand=True)
+        metadata_sw.set_child(self.metadata_list)
 
-        self.exif_frame = gtk.Overlay()
-        self.exif_frame.set_child(exif_frame)
+        self.metadata_frame = gtk.Overlay()
+        self.metadata_frame.set_child(metadata_frame)
 
         close_button = gtk.Button.new_from_icon_name('window-close')
         close_button.set_halign(gtk.Align.END)
         close_button.set_valign(gtk.Align.START)
-        close_button.connect('clicked', self.on_exif_closed)
-        self.exif_frame.add_overlay(close_button)
-        self.exif_frame.set_visible(False)
+        close_button.connect('clicked', self.on_metadata_closed)
+        self.metadata_frame.add_overlay(close_button)
+        self.metadata_frame.set_visible(False)
 
-        main_panel.set_end_child(self.exif_frame)
+        main_panel.set_end_child(self.metadata_frame)
 
         button = gtk.Button(label='Quit')
         button.connect('clicked', lambda _: app.quit())
@@ -970,16 +982,16 @@ class MedievalWindow(gtk.ApplicationWindow):
         self.albums.append(album)
         album.label.start_editing()
 
-    def on_exif_closed(self, button):
-        logging.info(f'on_exif_closed(): self={self}, button={button}')
+    def on_metadata_closed(self, button):
+        logging.info(f'on_metadata_closed(): self={self}, button={button}')
 
-        # Delete any previous contents from the EXIF list:
-        child = self.exif_list.get_first_child()
+        # Delete any previous contents from the metadata list:
+        child = self.metadata_list.get_first_child()
         while child:
-            self.exif_list.remove(child)
-            child = self.exif_list.get_first_child()
+            self.metadata_list.remove(child)
+            child = self.metadata_list.get_first_child()
 
-        self.exif_frame.set_visible(False)
+        self.metadata_frame.set_visible(False)
 
     def on_menu(self, simple_action, parameter):
         logging.info(f'simple_action: {simple_action}, parameter: {parameter}')
@@ -1014,7 +1026,14 @@ class MedievalApp(gtk.Application):
             # Populate the timeline with thumbnails:
             media_list = self.engine.query_media()
             for entry in media_list:
-                child = MediaFile(filename=entry['filename'], thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg', mimetype=entry['mimetype'], media_id=entry['id'], timestamp=entry['timestamp'])
+                child = MediaFile(
+                    filename=entry['filename'],
+                    thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg',
+                    mimetype=entry['mimetype'],
+                    media_id=entry['id'],
+                    timestamp=entry['timestamp'],
+                    description=entry['description']
+                )
                 self.main_window.display.timeline.insert(child, -1)
 
             # Populate collections:
