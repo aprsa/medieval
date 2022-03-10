@@ -215,6 +215,7 @@ class Album(gtk.Box):
                     child = MediaFile(
                         filename=entry['filename'],
                         thumbnail=f'{config.THUMBNAIL_DIR}/{entry["thumbnail"]}.jpg',
+                        mimetype=entry['mimetype'],
                         media_id=entry['id'],
                         timestamp=entry['timestamp'],
                         description=entry['description']
@@ -222,6 +223,8 @@ class Album(gtk.Box):
                     medieval.main_window.display.gallery.insert(child, -1)
                     medieval.main_window.display.gallery.album_id = self.album_id
 
+                medieval.main_window.display.visibility['timeline'] = False
+                medieval.main_window.display.visibility['gallery'] = True
                 medieval.main_window.display.timeline_frame.set_visible(False)
                 medieval.main_window.display.gallery_frame.set_visible(True)
 
@@ -532,9 +535,11 @@ class DisplayPanel(gtk.Paned):
         self.timeline.add_controller(dnd)
 
         # keep a tab on what's visible so that we can revert when necessary:
-        self.picture_state = False
-        self.timeline_state = None
-        self.gallery_state = None
+        self.visibility = {
+            'timeline': True,
+            'gallery': False,
+            'picture': False
+        }
 
         # Precompute portrait and landscape drop shadows:
         self.drop_shadows = {}
@@ -599,9 +604,9 @@ class DisplayPanel(gtk.Paned):
             shadow1 = self.drop_shadow(media[-1].getbbox()[2:], 10, 8, (0, 0))
             shadow2 = self.drop_shadow(media[0].getbbox()[2:], 10, 8, (0, 0))
             composite.paste(shadow1, (16, 16, 16+shadow1.width, 16+shadow1.height))
-            composite.paste(media[-1], (24, 24, 24+media[1].width, 24+media[1].height))
+            composite.paste(media[-1], (24, 24, 24+media[-1].width, 24+media[-1].height))
             composite.alpha_composite(shadow2, (10, 10))
-            composite.paste('grey', (18, 18, 18+media[1].width, 18+media[1].height))
+            composite.paste('grey', (18, 18, 18+media[2].width, 18+media[2].height))
             composite.alpha_composite(shadow2, (6, 6))
             composite.paste('grey', (14, 14, 14+media[1].width, 14+media[1].height))
             composite.alpha_composite(shadow2, (0, 0))
@@ -656,8 +661,10 @@ class DisplayPanel(gtk.Paned):
     def on_picture_frame_closed(self, button):
         logging.info(f'on_picture_frame_closed(): self={self}, button={button}')
         self.picture_frame.set_visible(False)
-        # self.timeline_frame.set_visible(self.timeline_state)
-        # self.gallery_frame.set_visible(self.gallery_state)
+        if self.visibility['timeline']:
+            self.timeline_frame.set_visible(True)
+        if self.visibility['gallery']:
+            self.gallery_frame.set_visible(True)
 
     def on_dnd_prepare(self, drag_source, x, y):
         media = gio.ListStore()
@@ -695,16 +702,16 @@ class DisplayPanel(gtk.Paned):
         logging.info(f'on_picture_clicked(): click={click}, n_press={n_press}, x={x}, y={y}')
         if n_press == 2:
             # self.picture_frame.set_visible(False)
-            if self.picture_state == False:
-                self.gallery_state = self.gallery_frame.get_visible()
-                self.timeline_state = self.timeline_frame.get_visible()
+            if self.visibility['picture'] == False:
+                self.visibility['gallery'] = self.gallery_frame.get_visible()
+                self.visibility['timeline'] = self.timeline_frame.get_visible()
                 self.gallery_frame.set_visible(False)
                 self.timeline_frame.set_visible(False)
-                self.picture_state = True
+                self.visibility['picture'] = True
             else:
-                self.timeline_frame.set_visible(self.timeline_state)
-                self.gallery_frame.set_visible(self.gallery_state)
-                self.picture_state = False
+                self.timeline_frame.set_visible(self.visibility['timeline'])
+                self.gallery_frame.set_visible(self.visibility['gallery'])
+                self.visibility['picture'] = False
 
 class PasswordPrompt(gtk.Dialog):
     def __init__(self, mode, album):

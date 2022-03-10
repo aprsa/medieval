@@ -10,6 +10,8 @@ import ffmpeg
 import logging
 import mimetypes
 import dateutil.parser as parser
+import shutil
+import time
 
 import config
 
@@ -159,6 +161,15 @@ class MedievalDB:
 
                 thumbnail = self.generate_thumbnail(filename, im)
 
+                if not config.IMPORT_IN_PLACE:
+                    try:
+                        ts = timestamp.split(' ')[0].replace(':', '-')
+                    except:
+                        ts = 'NULL'
+                    os.makedirs(config.ALBUM_DIR + f'/{ts}/', mode=0o755, exist_ok=True)
+                    shutil.copy2(filename, config.ALBUM_DIR + f'/{ts}/' + os.path.basename(filename))
+                    filename = config.ALBUM_DIR + f'/{ts}/' + os.path.basename(filename)
+
                 media_id = self.add_media(
                     filename=filename,
                     thumbnail=thumbnail,
@@ -172,6 +183,7 @@ class MedievalDB:
                     description=None
                 )
                 media_ids.append(media_id)
+            
             elif 'video' in mimetype:
                 try:
                     meta = ffmpeg.probe(filename)
@@ -191,6 +203,16 @@ class MedievalDB:
 
                 thumbnail = self.generate_video_thumbnail(filename, width, height, duration)
 
+                if not config.IMPORT_IN_PLACE:
+                    try:
+                        ts = timestamp.split(' ')[0].replace(':', '-')
+                    except:
+                        ts = 'NULL'
+
+                    os.makedirs(config.ALBUM_DIR + f'/{ts}/', mode=0o755, exist_ok=True)
+                    shutil.copy2(filename, config.ALBUM_DIR + f'/{ts}/' + os.path.basename(filename))
+                    filename = config.ALBUM_DIR + f'/{ts}/' + os.path.basename(filename)
+
                 media_id = self.add_media(
                     filename=filename,
                     thumbnail=thumbnail,
@@ -204,6 +226,7 @@ class MedievalDB:
                     description=None
                 )
                 media_ids.append(media_id)
+
             else:
                 logging.warning(f'mimetype={mimetype} not recognized as a media format, skipping.')
                 continue
@@ -211,7 +234,6 @@ class MedievalDB:
         if len(media_ids) == 0:
             return []
         else:
-            print(media_ids, tuple(media_ids))
             self.cursor.execute(f'select * from media where id in {tuple(media_ids)} order by timestamp asc')
             return self.cursor.fetchall()
 
